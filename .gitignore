@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project specific
+checkpoints/
+test_checkpoints/
+logs/
+*.pkl
+*.pth
+.DS_Store
+PLAN.md
+NEXT_STEPS.md
