@@ -71,7 +71,7 @@ def parse_args():
                         help='FEs for baseline (defaults to --max-fes)')
     
     # Evaluation settings
-    parser.add_argument('--deterministic', action='store_true',
+    parser.add_argument('--deterministic', action='store_true', default=False,
                         help='Use deterministic policy (no exploration)')
     parser.add_argument('--verbose', action='store_true',
                         help='Print detailed progress during evaluation')
@@ -179,8 +179,8 @@ def evaluate_rl_agent(
         
         # Get action probabilities from policy
         obs_tensor = model.policy.obs_to_tensor(obs.reshape(1, -1))[0]
-        with model.policy.get_distribution(obs_tensor) as distribution:
-            probs = distribution.distribution.probs.detach().cpu().numpy()[0]
+        distribution = model.policy.get_distribution(obs_tensor)
+        probs = distribution.distribution.probs.detach().cpu().numpy()[0]
         
         # Execute action
         obs, reward, terminated, truncated, info = env.step(int(action))

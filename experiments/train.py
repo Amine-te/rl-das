@@ -93,7 +93,7 @@ def parse_args():
                         help='Number of parallel environments')
     
     # Checkpointing and logging
-    parser.add_argument('--checkpoint-dir', type=str, default='experiments/checkpoints',
+    parser.add_argument('--checkpoint-dir', type=str, default='checkpoints',
                         help='Base directory for checkpoints, logs, and models (creates subdirs: checkpoints/, logs/)')
     parser.add_argument('--checkpoint-freq', type=int, default=50000,
                         help='Checkpoint save frequency (timesteps)')
@@ -381,7 +381,8 @@ def train(args):
             total_timesteps=args.timesteps,
             callback=callbacks,
             tb_log_name=args.run_name,
-            reset_num_timesteps=False if args.resume else True
+            reset_num_timesteps=False if args.resume else True,
+            progress_bar=True
         )
     except KeyboardInterrupt:
         print("\n\nTraining interrupted by user!")
