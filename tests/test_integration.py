@@ -24,7 +24,8 @@ except ImportError:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from problems import TSPProblem, BaseProblem
-from algorithms import RandomSearchAlgorithm, LocalSearchAlgorithm, GreedySearchAlgorithm
+from algorithms import GeneticAlgorithm, TabuSearch, SimulatedAnnealing
+from algorithms import GA, TS, SA  # Aliases
 from core import (
     StateExtractor, 
     RewardCalculator, 
@@ -261,7 +262,7 @@ class TestContextManager:
     def test_save_restore_context(self):
         """Test saving and restoring algorithm context."""
         problem = TSPProblem(num_cities=10, seed=42)
-        algo = LocalSearchAlgorithm(problem)
+        algo = TabuSearch(problem)
         algo.initialize()
         
         cm = ContextManager(num_algorithms=3)
@@ -270,7 +271,7 @@ class TestContextManager:
         algo.step(100)
         original_best = algo.best_cost
         original_solution = algo.best_solution.copy()
-        restart_count = algo.restart_count
+        original_iteration = algo.iteration
         
         # Save context
         cm.save_algorithm_context(0, algo)
@@ -282,7 +283,7 @@ class TestContextManager:
         # Modify algorithm substantially
         algo.best_cost = float('inf')
         algo.best_solution = None
-        algo.restart_count = 999
+        algo.iteration = 999
         
         # Restore context
         cm.restore_algorithm_context(0, algo)
@@ -290,7 +291,7 @@ class TestContextManager:
         # Verify state was restored
         assert algo.best_cost == original_best
         assert np.array_equal(algo.best_solution, original_solution)
-        assert algo.restart_count == restart_count
+        assert algo.iteration == original_iteration
     
     def test_common_context_update(self):
         """Test common context updates."""
@@ -333,9 +334,9 @@ class TestDASEnvironment:
         """Test environment can be created."""
         problem = TSPProblem(num_cities=20, seed=42)
         algorithms = [
-            RandomSearchAlgorithm(problem),
-            LocalSearchAlgorithm(problem),
-            GreedySearchAlgorithm(problem)
+            GeneticAlgorithm(problem),
+            TabuSearch(problem),
+            SimulatedAnnealing(problem)
         ]
         
         env = DASEnvironment(
@@ -352,9 +353,9 @@ class TestDASEnvironment:
         """Test environment reset."""
         problem = TSPProblem(num_cities=20, seed=42)
         algorithms = [
-            RandomSearchAlgorithm(problem),
-            LocalSearchAlgorithm(problem),
-            GreedySearchAlgorithm(problem)
+            GeneticAlgorithm(problem),
+            TabuSearch(problem),
+            SimulatedAnnealing(problem)
         ]
         
         env = DASEnvironment(
@@ -374,9 +375,9 @@ class TestDASEnvironment:
         """Test environment step."""
         problem = TSPProblem(num_cities=20, seed=42)
         algorithms = [
-            RandomSearchAlgorithm(problem),
-            LocalSearchAlgorithm(problem),
-            GreedySearchAlgorithm(problem)
+            GeneticAlgorithm(problem),
+            TabuSearch(problem),
+            SimulatedAnnealing(problem)
         ]
         
         env = DASEnvironment(
@@ -402,9 +403,9 @@ class TestDASEnvironment:
         """Test running a full episode."""
         problem = TSPProblem(num_cities=20, seed=42)
         algorithms = [
-            RandomSearchAlgorithm(problem),
-            LocalSearchAlgorithm(problem),
-            GreedySearchAlgorithm(problem)
+            GeneticAlgorithm(problem),
+            TabuSearch(problem),
+            SimulatedAnnealing(problem)
         ]
         
         env = DASEnvironment(
@@ -448,9 +449,9 @@ class TestDASGymEnv:
         """Test Gym env can be created."""
         problem = TSPProblem(num_cities=20, seed=42)
         algorithms = [
-            RandomSearchAlgorithm(problem),
-            LocalSearchAlgorithm(problem),
-            GreedySearchAlgorithm(problem)
+            GeneticAlgorithm(problem),
+            TabuSearch(problem),
+            SimulatedAnnealing(problem)
         ]
         
         env = make_das_env(
@@ -467,8 +468,8 @@ class TestDASGymEnv:
         """Test observation and action spaces."""
         problem = TSPProblem(num_cities=20, seed=42)
         algorithms = [
-            RandomSearchAlgorithm(problem),
-            LocalSearchAlgorithm(problem)
+            GeneticAlgorithm(problem),
+            TabuSearch(problem)
         ]
         
         env = DASGymEnv(
@@ -488,9 +489,9 @@ class TestDASGymEnv:
         """Test running episode through Gym interface."""
         problem = TSPProblem(num_cities=20, seed=42)
         algorithms = [
-            RandomSearchAlgorithm(problem),
-            LocalSearchAlgorithm(problem),
-            GreedySearchAlgorithm(problem)
+            GeneticAlgorithm(problem),
+            TabuSearch(problem),
+            SimulatedAnnealing(problem)
         ]
         
         env = make_das_env(
