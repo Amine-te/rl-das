@@ -214,16 +214,31 @@ class DASEnvironment:
         # Execute algorithm for interval
         new_best, new_cost = self._execute_algorithm(action)
         
-        # Update AH features
+        # Update AH features with stagnation tracking
         best_after = self.population[0][0]
         worst_after = self.population[-1][0]
+        
+        # Compute reward first (needed for state extractor)
+        is_global_best = new_cost < self.last_best_cost
+        reward = self.reward_calculator.compute_step_reward(
+            prev_best_cost,
+            new_cost,
+            self.current_fes,
+            is_feasible=self.problem.is_feasible(new_best),
+            is_global_best=is_global_best
+        )
+        
+        # Update state extractor with cost and reward info
         self.state_extractor.update_algorithm_history(
             action,
             self.best_before_step,
             best_after,
             self.worst_before_step,
             worst_after,
-            self.problem
+            self.problem,
+            cost_before=prev_best_cost,
+            cost_after=new_cost,
+            reward=reward
         )
         
         # Update context
@@ -232,21 +247,11 @@ class DASEnvironment:
         )
         
         # Check for improvement
-        is_global_best = new_cost < self.last_best_cost
         if is_global_best:
             self.stagnation_counter = 0
             self.last_best_cost = new_cost
         else:
             self.stagnation_counter += 1
-        
-        # Compute reward
-        reward = self.reward_calculator.compute_step_reward(
-            prev_best_cost,
-            new_cost,
-            self.current_fes,
-            is_feasible=self.problem.is_feasible(new_best),
-            is_global_best=is_global_best
-        )
         
         # Check termination
         terminated = self._is_terminated()

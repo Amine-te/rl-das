@@ -59,7 +59,7 @@ def parse_args():
     # Evaluation parameters
     parser.add_argument('--max-fes', type=int, default=10000,
                         help='Maximum function evaluations per episode')
-    parser.add_argument('--interval-fes', type=int, default=500,
+    parser.add_argument('--interval-fes', type=int, default=1000,
                         help='FEs per decision interval')
     parser.add_argument('--population-size', type=int, default=30,
                         help='Population size for environment tracking')

@@ -54,8 +54,12 @@ def parse_args():
                         help='Number of episodes for evaluation')
     
     # Problem parameters
-    parser.add_argument('--num-cities', type=int, default=50,
-                        help='Number of cities in TSP instances')
+    parser.add_argument('--num-cities', type=int, default=None,
+                        help='Number of cities (fixed size). If None, uses variable sizes for generalization')
+    parser.add_argument('--min-cities', type=int, default=30,
+                        help='Minimum number of cities for variable-size training')
+    parser.add_argument('--max-cities', type=int, default=75,
+                        help='Maximum number of cities for variable-size training')
     parser.add_argument('--num-instances', type=int, default=100,
                         help='Number of training problem instances')
     parser.add_argument('--instance-type', type=str, default='random',
@@ -65,7 +69,7 @@ def parse_args():
     # RL-DAS environment parameters
     parser.add_argument('--max-fes', type=int, default=10000,
                         help='Maximum function evaluations per episode')
-    parser.add_argument('--interval-fes', type=int, default=500,
+    parser.add_argument('--interval-fes', type=int, default=1000,
                         help='FEs per decision interval')
     parser.add_argument('--population-size', type=int, default=30,
                         help='Population size for environment tracking')
@@ -85,8 +89,8 @@ def parse_args():
                         help='GAE lambda')
     parser.add_argument('--clip-range', type=float, default=0.2,
                         help='PPO clip range')
-    parser.add_argument('--ent-coef', type=float, default=0.01,
-                        help='Entropy coefficient for exploration')
+    parser.add_argument('--ent-coef', type=float, default=0.1,
+                        help='Entropy coefficient for exploration (increased to prevent mode collapse)')
     
     # Parallelization
     parser.add_argument('--num-envs', type=int, default=4,
@@ -113,8 +117,10 @@ def parse_args():
 
 def generate_tsp_instances(
     num_instances: int,
-    num_cities: int,
-    instance_type: str,
+    num_cities: int = None,
+    min_cities: int = 30,
+    max_cities: int = 75,
+    instance_type: str = 'random',
     seed: int = 42
 ) -> List[TSPProblem]:
     """
@@ -122,7 +128,9 @@ def generate_tsp_instances(
     
     Args:
         num_instances: Number of instances to generate
-        num_cities: Number of cities per instance
+        num_cities: Fixed number of cities (if None, uses variable sizes)
+        min_cities: Minimum cities for variable-size training
+        max_cities: Maximum cities for variable-size training
         instance_type: Distribution type
         seed: Random seed
         
@@ -132,28 +140,35 @@ def generate_tsp_instances(
     np.random.seed(seed)
     instances = []
     
+    # Determine distributions to use
     if instance_type == 'mixed':
-        # Mixed distribution: 1/3 each type
         distributions = ['random', 'clustered', 'grid']
-        for i in range(num_instances):
-            dist = distributions[i % 3]
-            problem = TSPProblem(
-                num_cities=num_cities,
-                distribution=dist,
-                seed=seed + i
-            )
-            instances.append(problem)
     else:
-        # Single distribution type
-        for i in range(num_instances):
-            problem = TSPProblem(
-                num_cities=num_cities,
-                distribution=instance_type,
-                seed=seed + i
-            )
-            instances.append(problem)
+        distributions = [instance_type]
     
-    print(f"Generated {len(instances)} TSP instances ({instance_type}, {num_cities} cities)")
+    for i in range(num_instances):
+        # Select distribution
+        dist = distributions[i % len(distributions)]
+        
+        # Select size (fixed or variable)
+        if num_cities is not None:
+            size = num_cities
+        else:
+            # Variable size for better generalization
+            size = np.random.randint(min_cities, max_cities + 1)
+        
+        problem = TSPProblem(
+            num_cities=size,
+            distribution=dist,
+            seed=seed + i
+        )
+        instances.append(problem)
+    
+    if num_cities is not None:
+        print(f"Generated {len(instances)} TSP instances ({instance_type}, {num_cities} cities)")
+    else:
+        print(f"Generated {len(instances)} TSP instances ({instance_type}, {min_cities}-{max_cities} cities, variable size)")
+    
     return instances
 
 
@@ -302,7 +317,10 @@ def train(args):
     print("=" * 60)
     print(f"RL-DAS Training: {args.run_name}")
     print("=" * 60)
-    print(f"Problem: TSP with {args.num_cities} cities ({args.instance_type})")
+    if args.num_cities is not None:
+        print(f"Problem: TSP with {args.num_cities} cities ({args.instance_type})")
+    else:
+        print(f"Problem: TSP with {args.min_cities}-{args.max_cities} cities (variable size, {args.instance_type})")
     print(f"Algorithms: GA, TS, SA, ILS (4 algorithms)")
     print(f"Max FEs: {args.max_fes}, Interval: {args.interval_fes}")
     print(f"Training timesteps: {args.timesteps:,}")
@@ -318,6 +336,8 @@ def train(args):
     train_instances = generate_tsp_instances(
         num_instances=args.num_instances,
         num_cities=args.num_cities,
+        min_cities=args.min_cities,
+        max_cities=args.max_cities,
         instance_type=args.instance_type,
         seed=args.seed
     )
@@ -326,6 +346,8 @@ def train(args):
     eval_instances = generate_tsp_instances(
         num_instances=max(10, args.num_instances // 10),
         num_cities=args.num_cities,
+        min_cities=args.min_cities,
+        max_cities=args.max_cities,
         instance_type=args.instance_type,
         seed=args.seed + 10000  # Different seed
     )

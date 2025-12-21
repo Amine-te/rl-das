@@ -52,24 +52,50 @@ class StateExtractor:
         
         # Initialize algorithm history tracking
         self.algorithm_history: Dict[int, Dict[str, float]] = {
-            i: {'best_shift': 0.0, 'worst_shift': 0.0, 'call_count': 0}
+            i: {
+                'best_shift': 0.0,
+                'worst_shift': 0.0,
+                'call_count': 0,
+                'intervals_since_improvement': 0,
+                'recent_reward': 0.0,
+                'last_cost_improvement': 0.0
+            }
             for i in range(num_algorithms)
         }
         
-        # Exponential moving average factor for history
-        self.ema_alpha = 0.3
+        # Exponential moving average factor for history (increased for faster adaptation)
+        self.ema_alpha = 0.6
+        
+        # Episode tracking
+        self.current_step = 0
+        self.last_algo_used = None
         
     @property
     def state_dim(self) -> int:
-        """Total dimension of state vector."""
-        return self.NUM_LA_FEATURES + 2 * self.num_algorithms
+        """
+        Total dimension of state vector.
+        
+        LA features: 9
+        AH features per algorithm: 4 (best_shift, worst_shift, intervals_since_improvement, recent_reward)
+        Total: 9 + 4*L
+        """
+        return self.NUM_LA_FEATURES + 4 * self.num_algorithms
     
     def reset(self):
         """Reset history for new episode."""
         self.algorithm_history = {
-            i: {'best_shift': 0.0, 'worst_shift': 0.0, 'call_count': 0}
+            i: {
+                'best_shift': 0.0,
+                'worst_shift': 0.0,
+                'call_count': 0,
+                'intervals_since_improvement': 0,
+                'recent_reward': 0.0,
+                'last_cost_improvement': 0.0
+            }
             for i in range(self.num_algorithms)
         }
+        self.current_step = 0
+        self.last_algo_used = None
     
     def extract_la_features(
         self,
@@ -292,14 +318,24 @@ class StateExtractor:
         Extract algorithm history features.
         
         Returns:
-            numpy array of 2*L features (best_shift, worst_shift for each algorithm)
+            numpy array of 4*L features per algorithm:
+            - best_shift: Average edit distance of best solution
+            - worst_shift: Average edit distance of worst solution
+            - intervals_since_improvement: Normalized stagnation indicator [0,1]
+            - recent_reward: Reward from last use (normalized)
         """
-        features = np.zeros(2 * self.num_algorithms, dtype=np.float32)
+        features = np.zeros(4 * self.num_algorithms, dtype=np.float32)
         
         for i in range(self.num_algorithms):
             history = self.algorithm_history[i]
-            features[2 * i] = history['best_shift']
-            features[2 * i + 1] = history['worst_shift']
+            features[4 * i] = history['best_shift']
+            features[4 * i + 1] = history['worst_shift']
+            
+            # Normalize intervals_since_improvement (cap at 10 intervals)
+            features[4 * i + 2] = min(history['intervals_since_improvement'] / 10.0, 1.0)
+            
+            # Recent reward (already normalized)
+            features[4 * i + 3] = np.clip(history['recent_reward'], 0.0, 1.0)
         
         return features
     
@@ -310,12 +346,16 @@ class StateExtractor:
         best_after: Any,
         worst_before: Any,
         worst_after: Any,
-        problem: Any
+        problem: Any,
+        cost_before: float = None,
+        cost_after: float = None,
+        reward: float = 0.0
     ):
         """
         Update algorithm history after algorithm execution.
         
         Uses exponential moving average to track shifts over time.
+        Also tracks stagnation and recent performance.
         
         Args:
             algo_idx: Index of the algorithm that was executed
@@ -324,6 +364,9 @@ class StateExtractor:
             worst_before: Worst solution in population before
             worst_after: Worst solution in population after
             problem: Problem instance for computing distances
+            cost_before: Cost before execution (for improvement tracking)
+            cost_after: Cost after execution (for improvement tracking)
+            reward: Reward received for this algorithm execution
         """
         if algo_idx < 0 or algo_idx >= self.num_algorithms:
             return
@@ -347,7 +390,28 @@ class StateExtractor:
                 (1 - self.ema_alpha) * history['worst_shift']
             )
         
+        # Track improvement and stagnation
+        if cost_before is not None and cost_after is not None:
+            improvement = cost_before - cost_after
+            history['last_cost_improvement'] = improvement
+            
+            # Update stagnation counter
+            if improvement > 1e-9:  # Meaningful improvement
+                history['intervals_since_improvement'] = 0
+            else:
+                history['intervals_since_improvement'] += 1
+        
+        # Update recent reward
+        history['recent_reward'] = reward
+        
+        # Update intervals_since_improvement for other algorithms
+        for i in range(self.num_algorithms):
+            if i != algo_idx:
+                self.algorithm_history[i]['intervals_since_improvement'] += 1
+        
         history['call_count'] += 1
+        self.current_step += 1
+        self.last_algo_used = algo_idx
     
     def extract_state(
         self,
