@@ -74,29 +74,28 @@ def test_state_changes_between_intervals():
         print(f"  Action: {actions[i-1]} ({'GA' if actions[i-1] == 0 else 'TS'})")
         
         # Check specific features
-        la_features_prev = states[i-1][:9]
-        la_features_curr = states[i][:9]
-        ah_features_prev = states[i-1][9:]
-        ah_features_curr = states[i][9:]
+        # 13 features: 5 LA, 4 Algo, 4 Stagnation
+        la_features_prev = states[i-1][:5]
+        la_features_curr = states[i][:5]
+        algo_prev = states[i-1][5:9]
+        algo_curr = states[i][5:9]
+        stag_prev = states[i-1][9:]
+        stag_curr = states[i][9:]
         
         la_diff = np.linalg.norm(la_features_curr - la_features_prev)
-        ah_diff = np.linalg.norm(ah_features_curr - ah_features_prev)
+        algo_diff = np.linalg.norm(algo_curr - algo_prev)
+        stag_diff = np.linalg.norm(stag_curr - stag_prev)
         
         print(f"  LA features diff: {la_diff:.6f}")
-        print(f"  AH features diff: {ah_diff:.6f}")
+        print(f"  Algo features diff: {algo_diff:.6f}")
+        print(f"  Stagnation diff: {stag_diff:.6f}")
         
-        # Check stagnation features (every 4th feature in AH)
-        for algo_idx in range(2):
-            stag_idx = 9 + algo_idx * 4 + 2  # intervals_since_improvement
-            reward_idx = 9 + algo_idx * 4 + 3  # recent_reward
-            
-            stag_prev = states[i-1][stag_idx]
-            stag_curr = states[i][stag_idx]
-            reward_prev = states[i-1][reward_idx]
-            reward_curr = states[i][reward_idx]
-            
-            print(f"  Algo {algo_idx}: stagnation {stag_prev:.3f}->{stag_curr:.3f}, "
-                  f"reward {reward_prev:.3f}->{reward_curr:.3f}")
+        # Verify current algorithm one-hot encoding
+        current_algo = np.argmax(algo_curr) if np.max(algo_curr) > 0 else None
+        print(f"  Current algo state: {current_algo} (Should be {actions[i-1]})")
+        
+        # Verify stagnation updates
+        print(f"  Stagnation counters: {stag_curr}")
     
     # Verify states are changing
     avg_diff = np.mean(state_diffs)
