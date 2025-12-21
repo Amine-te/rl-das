@@ -21,5 +21,4 @@ logs/
 *.pkl
 *.pth
 .DS_Store
-PLAN.md
-NEXT_STEPS.md
+docs/
