@@ -67,7 +67,7 @@ def parse_args():
                         help='TSP instance distribution type')
     
     # RL-DAS environment parameters
-    parser.add_argument('--max-fes', type=int, default=10000,
+    parser.add_argument('--max-fes', type=int, default=20000,
                         help='Maximum function evaluations per episode')
     parser.add_argument('--interval-fes', type=int, default=1000,
                         help='FEs per decision interval')
@@ -75,7 +75,7 @@ def parse_args():
                         help='Population size for environment tracking')
     
     # PPO hyperparameters (from paper)
-    parser.add_argument('--learning-rate', type=float, default=1e-5,
+    parser.add_argument('--learning-rate', type=float, default=1e-3,
                         help='PPO learning rate')
     parser.add_argument('--n-steps', type=int, default=2048,
                         help='Steps per update')
@@ -89,7 +89,7 @@ def parse_args():
                         help='GAE lambda')
     parser.add_argument('--clip-range', type=float, default=0.2,
                         help='PPO clip range')
-    parser.add_argument('--ent-coef', type=float, default=0.05,
+    parser.add_argument('--ent-coef', type=float, default=0.03,
                         help='Entropy coefficient for exploration (increased to prevent mode collapse)')
     
     # Parallelization

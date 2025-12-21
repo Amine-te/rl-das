@@ -60,10 +60,7 @@ class DASEnvironment:
         self.stagnation_limit = stagnation_limit
         
         # Initialize components
-        self.state_extractor = StateExtractor(
-            num_algorithms=self.num_algorithms,
-            neighbor_sample_size=neighbor_sample_size
-        )
+        self.state_extractor = StateExtractor(num_algorithms=self.num_algorithms)
         self.reward_calculator = RewardCalculator(max_fes=max_fes)
         self.context_manager = ContextManager(
             num_algorithms=self.num_algorithms,
@@ -73,15 +70,12 @@ class DASEnvironment:
         # Episode state
         self.current_fes = 0
         self.current_algo_idx: Optional[int] = None
+        self.last_action: Optional[int] = None  # For switching bonus
         self.population: List[Tuple[Any, float]] = []
         self.episode_step = 0
         self.stagnation_counter = 0
         self.last_best_cost = float('inf')
         self.done = False
-        
-        # Track solutions for AH features
-        self.best_before_step: Optional[Any] = None
-        self.worst_before_step: Optional[Any] = None
     
     @property
     def state_dim(self) -> int:
@@ -116,8 +110,10 @@ class DASEnvironment:
         # Reset episode state
         self.current_fes = 0
         self.current_algo_idx = None
+        self.last_action = None
         self.episode_step = 0
         self.stagnation_counter = 0
+        self.cumulative_reward = 0.0
         self.done = False
         
         # Initialize all algorithms
@@ -139,14 +135,15 @@ class DASEnvironment:
             best_sol, best_cost, -1, self.current_fes
         )
         
-        # Extract initial state
+        # Extract initial state (no current algorithm yet)
         state = self.state_extractor.extract_state(
             self.problem,
             best_sol,
             best_cost,
             self.population,
             self.current_fes,
-            self.max_fes
+            self.max_fes,
+            current_algo_idx=None
         )
         
         return state
@@ -214,32 +211,20 @@ class DASEnvironment:
         # Execute algorithm for interval
         new_best, new_cost = self._execute_algorithm(action)
         
-        # Update AH features with stagnation tracking
-        best_after = self.population[0][0]
-        worst_after = self.population[-1][0]
+        # Compute base reward
+        base_reward = self.reward_calculator.compute_step_reward(prev_best_cost, new_cost)
         
-        # Compute reward first (needed for state extractor)
-        is_global_best = new_cost < self.last_best_cost
-        reward = self.reward_calculator.compute_step_reward(
-            prev_best_cost,
-            new_cost,
-            self.current_fes,
-            is_feasible=self.problem.is_feasible(new_best),
-            is_global_best=is_global_best
-        )
+        # Switching bonus (encourage exploration)
+        switching_bonus = 0.0
+        if self.last_action is not None and action != self.last_action:
+            switching_bonus = 0.05
         
-        # Update state extractor with cost and reward info
-        self.state_extractor.update_algorithm_history(
-            action,
-            self.best_before_step,
-            best_after,
-            self.worst_before_step,
-            worst_after,
-            self.problem,
-            cost_before=prev_best_cost,
-            cost_after=new_cost,
-            reward=reward
-        )
+        reward = base_reward + switching_bonus
+        self.cumulative_reward += reward
+        
+        # Update stagnation tracking
+        improved = new_cost < prev_best_cost
+        self.state_extractor.update_stagnation(action, improved)
         
         # Update context
         self.context_manager.update_common_context(
@@ -247,6 +232,7 @@ class DASEnvironment:
         )
         
         # Check for improvement
+        is_global_best = new_cost < self.last_best_cost
         if is_global_best:
             self.stagnation_counter = 0
             self.last_best_cost = new_cost
@@ -262,18 +248,20 @@ class DASEnvironment:
             # Save final context
             self.context_manager.save_algorithm_context(action, algo)
         
-        # Extract new state
+        # Extract new state (include current algorithm)
         state = self.state_extractor.extract_state(
             self.problem,
             new_best,
             new_cost,
             self.population,
             self.current_fes,
-            self.max_fes
+            self.max_fes,
+            current_algo_idx=action
         )
         
         # Update tracking
         self.current_algo_idx = action
+        self.last_action = action
         self.episode_step += 1
         
         # Build info dict
@@ -335,11 +323,12 @@ class DASEnvironment:
     
     def get_final_rewards(self) -> List[float]:
         """
-        Get final rewards with speed factor applied.
+        Get final rewards.
         
-        Call this at episode end to get properly scaled rewards.
+        In minimal design, we use raw rewards directly, so this is just
+        compatibility wrapper or empty. Gym wrapper handles accumulation.
         """
-        return self.reward_calculator.finalize_episode(self.current_fes)
+        return []
     
     def get_episode_info(self) -> Dict:
         """Get comprehensive episode information."""
@@ -351,5 +340,5 @@ class DASEnvironment:
             'total_steps': self.episode_step,
             'switch_count': self.context_manager.get_switch_count(),
             'algorithm_stats': self.context_manager.get_algorithm_stats(),
-            'reward_sum': self.reward_calculator.get_current_reward_sum()
+            'reward_sum': self.cumulative_reward
         }

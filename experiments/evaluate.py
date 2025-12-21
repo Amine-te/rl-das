@@ -50,14 +50,14 @@ def parse_args():
                         help='Number of test instances to evaluate')
     parser.add_argument('--num-cities', type=int, default=50,
                         help='Number of cities in TSP instances')
-    parser.add_argument('--instance-type', type=str, default='random',
+    parser.add_argument('--instance-type', type=str, default='mixed',
                         choices=['random', 'clustered', 'grid', 'mixed'],
                         help='TSP instance distribution type')
     parser.add_argument('--seed', type=int, default=999,
                         help='Random seed for test instances')
     
     # Evaluation parameters
-    parser.add_argument('--max-fes', type=int, default=10000,
+    parser.add_argument('--max-fes', type=int, default=30000,
                         help='Maximum function evaluations per episode')
     parser.add_argument('--interval-fes', type=int, default=1000,
                         help='FEs per decision interval')
