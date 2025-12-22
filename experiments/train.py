@@ -89,7 +89,7 @@ def parse_args():
                         help='GAE lambda')
     parser.add_argument('--clip-range', type=float, default=0.2,
                         help='PPO clip range')
-    parser.add_argument('--ent-coef', type=float, default=0.01,
+    parser.add_argument('--ent-coef', type=float, default=0.02,
                         help='Entropy coefficient for exploration (increased to prevent mode collapse)')
     
     # Parallelization
