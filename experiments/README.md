@@ -2,34 +2,38 @@
 
 ## 🚀 Quick Start
 
-### 1. Train Agent (PPO or DQN)
+All training and evaluation logic is now unified into `train.py` and `evaluate.py`.
 
-**Option A: PPO (Recommended for continuous control / stability)**
+### 1. Train Agent
+
+**Option A: Train DQN on TSPLIB (Recommended)**
+Uses real benchmark instances with data augmentation (8x).
 
 ```bash
-python train_ppo.py --timesteps 500000 --num-instances 200 --ent-coef 0.05 --checkpoint-dir ../checkpoints/ppo_run1
+python train.py --model-type dqn --tsplib-dir data/tsplib --timesteps 500000 --buffer-size 100000 --checkpoint-dir checkpoints/dqn_tsplib
 ```
 
-**Option B: DQN (Better for discrete algorithm selection)**
+**Option B: Train PPO on Synthetic Data**
+Uses generated random instances.
 
 ```bash
-python train_dqn.py --timesteps 500000 --num-instances 200 --buffer-size 100000 --checkpoint-dir ../checkpoints/dqn_run1
+python train.py --model-type ppo --timesteps 500000 --num-instances 200 --ent-coef 0.02 --checkpoint-dir checkpoints/ppo_synthetic
 ```
 
 ### 2. Evaluate
 
-Compare against single-algorithm baselines:
+Compare against single-algorithm baselines on synthetic or real data.
 
-**Evaluate PPO:**
+**Evaluate on Training Data (TSPLIB):**
 
 ```bash
-python evaluate_ppo.py --model ../checkpoints/ppo_run1/best_model.zip --num-test-instances 20 --run-baselines --deterministic
+python evaluate.py --model checkpoints/dqn_tsplib/best_model.zip --tsplib-dir data/tsplib --run-baselines
 ```
 
-**Evaluate DQN:**
+**Evaluate on New Synthetic Data:**
 
 ```bash
-python evaluate_dqn.py --model ../checkpoints/dqn_run1/best_model.zip --num-test-instances 20 --run-baselines --deterministic
+python evaluate.py --model checkpoints/dqn_tsplib/best_model.zip --num-cities 50 --num-test-instances 20 --run-baselines
 ```
 
 ## 🔄 Resuming Training
@@ -37,23 +41,25 @@ python evaluate_dqn.py --model ../checkpoints/dqn_run1/best_model.zip --num-test
 To continue training from a saved checkpoint:
 
 ```bash
-python train_ppo.py \
-  --resume ../checkpoints/run1/checkpoints/run1_checkpoint_100000_steps.zip \
+python train.py \
+  --resume checkpoints/dqn_run1/checkpoints/dqn_run1_checkpoint_100000_steps.zip \
   --timesteps 500000 \
-  --checkpoint-dir ../checkpoints/run1_continued
+  --checkpoint-dir checkpoints/dqn_run1_continued
 ```
 
 ## ⚙️ Common Configurations
 
-| Scenario                    | Command Flags                                                  |
-| :-------------------------- | :------------------------------------------------------------- |
-| **Variable Size** (Default) | _(No size flags required)_                                     |
-| **Fixed Size** (e.g. 50)    | `--num-cities 50`                                              |
-| **Production Run**          | `--timesteps 1000000 --num-instances 500`                      |
-| **Explore More**            | `--ent-coef 0.05` (PPO) or `--exploration-final-eps 0.1` (DQN) |
+| Feature           | Flag                                                 |
+| :---------------- | :--------------------------------------------------- |
+| **Model Type**    | `--model-type [dqn, ppo]`                            |
+| **Real Data**     | `--tsplib-dir data/tsplib`                           |
+| **Augmentation**  | `--augment` (Default True for TSPLIB)                |
+| **Normalization** | `--normalize` (Default True)                         |
+| **Fixed Size**    | `--num-cities 50`                                    |
+| **Explore More**  | `--initial-eps 1.0` (DQN) or `--ent-coef 0.05` (PPO) |
 
 ## 📊 Outputs
 
-- **Models**: `../checkpoints/RunName/best_model.zip`
-- **Logs**: `tensorboard --logdir ../checkpoints/RunName/logs`
+- **Models**: `checkpoints/RunName/best_model.zip`
+- **Logs**: `tensorboard --logdir checkpoints/RunName/logs`
 - **Results**: `results/RunName.txt`
