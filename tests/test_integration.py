@@ -99,7 +99,7 @@ class TestStateExtractor:
     def test_state_extraction(self):
         """Test full state extraction."""
         problem = TSPProblem(num_cities=20, seed=42)
-        extractor = StateExtractor(num_algorithms=3, neighbor_sample_size=10)
+        extractor = StateExtractor(num_algorithms=3)
         
         # Create a population
         population = []
@@ -115,9 +115,8 @@ class TestStateExtractor:
             current_fes=10, max_fes=1000
         )
         
-        # Check state dimensions
+        # Check state dimensions - 5 LA + 4*3 = 17 for 3 algos, but we use 4 by default
         assert state.shape == (extractor.state_dim,)
-        assert state.shape == (9 + 2 * 3,)  # 9 LA + 6 AH
         
         # Check all values are in [0, 1]
         assert np.all(state >= 0)
@@ -126,7 +125,7 @@ class TestStateExtractor:
     def test_la_features(self):
         """Test LA features extraction."""
         problem = TSPProblem(num_cities=20, seed=42)
-        extractor = StateExtractor(num_algorithms=3, neighbor_sample_size=10)
+        extractor = StateExtractor(num_algorithms=3)
         
         population = []
         for _ in range(10):
@@ -137,37 +136,36 @@ class TestStateExtractor:
         best_sol, best_cost = min(population, key=lambda x: x[1])
         
         la = extractor.extract_la_features(
-            problem, best_sol, best_cost, population,
+            problem, best_cost, population,
             current_fes=50, max_fes=100
         )
         
-        assert la.shape == (9,)
+        assert la.shape == (5,)  # 5 LA features now
         assert np.all(la >= 0)
         assert np.all(la <= 1)
         
         # Budget consumed should be 0.5
-        assert abs(la[8] - 0.5) < 0.1
+        assert abs(la[1] - 0.5) < 0.1
     
-    def test_ah_features_update(self):
-        """Test algorithm history update."""
-        problem = TSPProblem(num_cities=20, seed=42)
+    def test_stagnation_update(self):
+        """Test stagnation and credibility update."""
         extractor = StateExtractor(num_algorithms=3)
         
-        sol1 = problem.generate_random_solution()
-        sol2 = problem.generate_random_solution()
-        sol3 = problem.generate_random_solution()
-        sol4 = problem.generate_random_solution()
+        # Initial credibility should be 0.5
+        assert np.all(extractor.credibility_scores == 0.5)
         
-        # Initial AH should be zeros
-        ah = extractor.extract_ah_features()
-        assert np.all(ah == 0)
+        # Simulate improvement
+        extractor.update_stagnation(0, improved=True, improvement_magnitude=0.1)
         
-        # Update history for algorithm 0
-        extractor.update_algorithm_history(0, sol1, sol2, sol3, sol4, problem)
+        # Credibility should increase
+        assert extractor.credibility_scores[0] > 0.5
+        # Recent improvement should be recorded
+        assert extractor.recent_improvements[0] > 0
         
-        ah = extractor.extract_ah_features()
-        # Algorithm 0's features should be non-zero now
-        assert ah[0] > 0 or ah[1] > 0  # At least one should change
+        # Simulate failure
+        extractor.update_stagnation(0, improved=False)
+        # Credibility should decrease
+        assert extractor.credibility_scores[0] < 0.65
 
 
 class TestRewardCalculator:
@@ -189,62 +187,74 @@ class TestRewardCalculator:
     
     def test_no_improvement_reward(self):
         """Test reward when no improvement."""
-        calc = RewardCalculator(max_fes=1000)
+        calc = RewardCalculator(max_fes=1000, num_algorithms=4)
         calc.reset(initial_cost=100.0)
         
         reward = calc.compute_step_reward(
             prev_cost=100.0,
             curr_cost=100.0,
-            fes_used=100
+            fes_used=100,
+            credibility=0.5,
+            algo_idx=0
         )
         
-        assert reward == 0  # No improvement = no reward
+        assert reward < 0  # No improvement = negative reward
     
-    def test_speed_factor(self):
-        """Test speed factor application."""
-        calc = RewardCalculator(max_fes=1000)
+    def test_switch_bonus(self):
+        """Test switch bonus on successful switch."""
+        calc = RewardCalculator(max_fes=1000, num_algorithms=4)
         calc.reset(initial_cost=100.0)
         
-        # Record two improvements
-        calc.compute_step_reward(100.0, 90.0, 100)
-        calc.compute_step_reward(90.0, 80.0, 200)
-        
-        # Finalize with fast termination
-        fast_rewards = calc.finalize_episode(final_fes=200)
-        
-        # Reset and do same with slow termination
-        calc.reset(initial_cost=100.0)
-        calc.compute_step_reward(100.0, 90.0, 100)
-        calc.compute_step_reward(90.0, 80.0, 200)
-        slow_rewards = calc.finalize_episode(final_fes=800)
-        
-        # Fast should have higher multiplier
-        assert sum(fast_rewards) > sum(slow_rewards)
-    
-    def test_milestone_bonus(self):
-        """Test milestone bonus application."""
-        calc = RewardCalculator(max_fes=1000, milestone_bonus=1.5)
-        calc.reset(initial_cost=100.0)
-        
-        # Regular improvement
+        # Improvement without switch
         reward1 = calc.compute_step_reward(
             prev_cost=100.0,
             curr_cost=90.0,
             fes_used=100,
-            is_global_best=False
+            switched=False,
+            algo_idx=0
         )
         
         calc.reset(initial_cost=100.0)
         
-        # Same improvement but with milestone
+        # Same improvement with switch
         reward2 = calc.compute_step_reward(
             prev_cost=100.0,
             curr_cost=90.0,
             fes_used=100,
-            is_global_best=True
+            switched=True,
+            algo_idx=1
         )
         
+        # Switch bonus should make reward2 > reward1
         assert reward2 > reward1
+    
+    def test_credibility_penalty(self):
+        """Test credibility-weighted penalty."""
+        calc = RewardCalculator(max_fes=1000, num_algorithms=4)
+        calc.reset(initial_cost=100.0)
+        
+        # No improvement with high credibility
+        reward_high = calc.compute_step_reward(
+            prev_cost=100.0,
+            curr_cost=100.0,
+            fes_used=100,
+            credibility=0.9,
+            algo_idx=0
+        )
+        
+        calc.reset(initial_cost=100.0)
+        
+        # No improvement with low credibility
+        reward_low = calc.compute_step_reward(
+            prev_cost=100.0,
+            curr_cost=100.0,
+            fes_used=100,
+            credibility=0.1,
+            algo_idx=1
+        )
+        
+        # Low credibility should have harsher penalty
+        assert reward_low < reward_high
 
 
 class TestContextManager:
@@ -346,7 +356,7 @@ class TestDASEnvironment:
             interval_fes=500
         )
         
-        assert env.state_dim == 9 + 2 * 3  # 15
+        assert env.state_dim == 5 + 4 * 3  # 5 LA + 4*num_algos features = 17
         assert env.action_dim == 3
     
     def test_environment_reset(self):
@@ -461,7 +471,7 @@ class TestDASGymEnv:
             interval_fes=500
         )
         
-        assert env.observation_space.shape[0] == 15
+        assert env.observation_space.shape[0] == 5 + 4 * 3  # 17 for 3 algos
         assert env.action_space.n == 3
     
     def test_gym_env_spaces(self):
@@ -529,7 +539,7 @@ class TestGeneralizability:
     
     def test_state_consistency_across_sizes(self):
         """Test that state dimensions are consistent across problem sizes."""
-        extractor = StateExtractor(num_algorithms=3, neighbor_sample_size=10)
+        extractor = StateExtractor(num_algorithms=3)
         
         for num_cities in [10, 20, 50, 100]:
             problem = TSPProblem(num_cities=num_cities, seed=42)
@@ -542,13 +552,14 @@ class TestGeneralizability:
             
             best_sol, best_cost = min(population, key=lambda x: x[1])
             
+            extractor.reset()  # Reset between problems
             state = extractor.extract_state(
                 problem, best_sol, best_cost, population,
                 current_fes=10, max_fes=1000
             )
             
             # State dimension should be the same regardless of problem size
-            assert state.shape == (15,), f"Failed for {num_cities} cities"
+            assert state.shape == (extractor.state_dim,), f"Failed for {num_cities} cities"
             
             # All values should be normalized
             assert np.all(state >= 0), f"Negative values for {num_cities} cities"
@@ -556,7 +567,7 @@ class TestGeneralizability:
     
     def test_different_distributions(self):
         """Test with different city distributions."""
-        extractor = StateExtractor(num_algorithms=3, neighbor_sample_size=10)
+        extractor = StateExtractor(num_algorithms=3)
         
         for distribution in ['random', 'clustered', 'grid']:
             problem = TSPProblem(num_cities=30, distribution=distribution, seed=42)
@@ -569,12 +580,13 @@ class TestGeneralizability:
             
             best_sol, best_cost = min(population, key=lambda x: x[1])
             
+            extractor.reset()  # Reset between problems
             state = extractor.extract_state(
                 problem, best_sol, best_cost, population,
                 current_fes=10, max_fes=1000
             )
             
-            assert state.shape == (15,)
+            assert state.shape == (extractor.state_dim,)
             assert np.all(state >= 0)
             assert np.all(state <= 1)
 

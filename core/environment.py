@@ -61,7 +61,7 @@ class DASEnvironment:
         
         # Initialize components
         self.state_extractor = StateExtractor(num_algorithms=self.num_algorithms)
-        self.reward_calculator = RewardCalculator(max_fes=max_fes)
+        self.reward_calculator = RewardCalculator(max_fes=max_fes, num_algorithms=self.num_algorithms)
         self.context_manager = ContextManager(
             num_algorithms=self.num_algorithms,
             elite_size=5
@@ -209,22 +209,38 @@ class DASEnvironment:
         prev_best_cost = self.population[0][1]
         
         # Execute algorithm for interval
+        start_fes = self.current_fes
         new_best, new_cost = self._execute_algorithm(action)
+        fes_used = self.current_fes - start_fes
+        progress = self.current_fes / self.max_fes
         
-        # Compute base reward
-        base_reward = self.reward_calculator.compute_step_reward(prev_best_cost, new_cost)
+        # Determine if we switched
+        switched = self.last_action is not None and action != self.last_action
         
-        # Switching bonus (encourage exploration)
-        switching_bonus = 0.0
-        if self.last_action is not None and action != self.last_action:
-            switching_bonus = 0.05
+        # Get credibility of selected algorithm
+        credibility = self.state_extractor.credibility_scores[action]
         
-        reward = base_reward + switching_bonus
+        # Compute improvement magnitude for state update
+        if self.reward_calculator.initial_cost and self.reward_calculator.initial_cost > 0:
+            improvement_magnitude = (prev_best_cost - new_cost) / self.reward_calculator.initial_cost
+        else:
+            improvement_magnitude = 0.0
+        
+        # Compute reward with new parameters
+        reward = self.reward_calculator.compute_step_reward(
+            prev_cost=prev_best_cost,
+            curr_cost=new_cost,
+            fes_used=fes_used,
+            progress=progress,
+            switched=switched,
+            credibility=credibility,
+            algo_idx=action
+        )
         self.cumulative_reward += reward
         
-        # Update stagnation tracking
+        # Update stagnation tracking with improvement magnitude
         improved = new_cost < prev_best_cost
-        self.state_extractor.update_stagnation(action, improved)
+        self.state_extractor.update_stagnation(action, improved, improvement_magnitude)
         
         # Update context
         self.context_manager.update_common_context(
