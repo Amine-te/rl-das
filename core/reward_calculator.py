@@ -1,27 +1,24 @@
 """
-Reward calculator for RL-DAS with Performance-Gated Diversity.
+Reward calculator for RL-DAS with Stick-with-Winner behavior.
 
-Key design principles:
-1. Reward switching ONLY when it leads to improvement
-2. Graduated penalties based on algorithm credibility
-3. Early exploration bonus that decays over progress
-4. Freshness bonus for trying under-used algorithms
+Simple, clear reward signals:
+- Reward staying with improving algorithm
+- Punish staying when stuck
+- Reward switching to proven/fresh algorithm when stuck
 """
 
 import numpy as np
-from typing import List, Tuple
+from typing import List
 
 
 class RewardCalculator:
     """
     Calculate rewards for algorithm selection.
     
-    Design:
-    - Positive reward for improvement (scaled by 100x)
-    - Switch bonus ONLY on successful switch (+0.2)
-    - Freshness bonus for trying underused algorithms
-    - Graduated penalty based on credibility
-    - Early exploration multiplier that decays
+    Behavioral design:
+    - Stick with winner: +1.0 for staying when improving
+    - Switch when stuck: -1.0 for staying when not improving
+    - Smart switching: bonus for switching to proven/fresh algo
     """
     
     def __init__(self, max_fes: int, initial_cost: float = None, num_algorithms: int = 4):
@@ -35,116 +32,115 @@ class RewardCalculator:
         """
         self.max_fes = max_fes
         self.initial_cost = initial_cost
-        self.improvement_scale = 100.0  # Scale up for clear learning signal
         self.num_algorithms = num_algorithms
         
-        # Track algorithm usage for freshness bonus
-        self.algo_usage_counts = [0] * num_algorithms
-        self.total_steps = 0
+        # Track algorithm success history
+        self.algo_attempts = np.zeros(num_algorithms)
+        self.algo_successes = np.zeros(num_algorithms)
+        self.algo_last_used = np.zeros(num_algorithms)  # Step when last used
+        self.current_step = 0
         
     def reset(self, initial_cost: float):
-        """
-        Reset for new episode.
-        
-        Args:
-            initial_cost: Cost of initial solution
-        """
+        """Reset for new episode."""
         self.initial_cost = initial_cost
-        self.algo_usage_counts = [0] * self.num_algorithms
-        self.total_steps = 0
+        self.algo_attempts = np.zeros(self.num_algorithms)
+        self.algo_successes = np.zeros(self.num_algorithms)
+        self.algo_last_used = np.full(self.num_algorithms, -10)  # All "stale" initially
+        self.current_step = 0
+    
+    def get_success_rates(self) -> np.ndarray:
+        """Get success rate for each algorithm."""
+        rates = np.zeros(self.num_algorithms)
+        for i in range(self.num_algorithms):
+            if self.algo_attempts[i] > 0:
+                rates[i] = self.algo_successes[i] / self.algo_attempts[i]
+            else:
+                rates[i] = 0.5  # Unknown = neutral
+        return rates
+    
+    def get_freshness(self) -> np.ndarray:
+        """Get freshness score for each algorithm (how long since used)."""
+        freshness = np.zeros(self.num_algorithms)
+        for i in range(self.num_algorithms):
+            steps_since_used = self.current_step - self.algo_last_used[i]
+            # Normalize: 0 = just used, 1 = unused for 10+ steps
+            freshness[i] = min(steps_since_used / 10.0, 1.0)
+        return freshness
     
     def compute_step_reward(
         self,
         prev_cost: float,
         curr_cost: float,
-        fes_used: int = 1000,
-        progress: float = 0.5,
-        switched: bool = False,
-        credibility: float = 0.5,
-        algo_idx: int = 0
+        algo_idx: int,
+        switched: bool,
+        prev_improved: bool
     ) -> float:
         """
-        Compute reward for a single step with Performance-Gated Diversity.
+        Compute reward for a single step.
         
         Args:
             prev_cost: Cost before algorithm execution
             curr_cost: Cost after algorithm execution
-            fes_used: Number of FEs used in this step
-            progress: Episode progress (0.0 to 1.0)
-            switched: Whether agent switched algorithms this step
-            credibility: Credibility score of selected algorithm [0,1]
             algo_idx: Index of the algorithm that was selected
+            switched: Whether agent switched algorithms this step
+            prev_improved: Whether the PREVIOUS step improved
             
         Returns:
             Reward value
         """
-        # Update tracking
-        self.total_steps += 1
-        if 0 <= algo_idx < self.num_algorithms:
-            self.algo_usage_counts[algo_idx] += 1
+        self.current_step += 1
         
-        if self.initial_cost is None or self.initial_cost <= 0:
-            # Fallback if not initialized
-            improvement = prev_cost - curr_cost
-        else:
-            # Normalized improvement
-            improvement = (prev_cost - curr_cost) / self.initial_cost
+        # Track this attempt
+        self.algo_attempts[algo_idx] += 1
+        self.algo_last_used[algo_idx] = self.current_step
         
-        # === IMPROVEMENT CASE ===
-        if improvement > 1e-9:
-            base_reward = improvement * self.improvement_scale
+        # Did we improve?
+        improved = curr_cost < prev_cost - 1e-9
+        if improved:
+            self.algo_successes[algo_idx] += 1
+        
+        # Get algorithm quality metrics
+        success_rates = self.get_success_rates()
+        freshness = self.get_freshness()
+        
+        # === REWARD LOGIC ===
+        
+        if improved:
+            # === CASE 1: We improved ===
+            # Calculate relative improvement magnitude
+            rel_imp = 0.0
+            if self.initial_cost and self.initial_cost > 0:
+                rel_imp = (prev_cost - curr_cost) / self.initial_cost
             
-            # Phase 1: Efficiency (< 30% progress)
-            # Favor algorithms that achieve improvement quickly
-            if progress < 0.3:
-                efficiency_factor = 1000.0 / max(fes_used, 1)
-                base_reward = base_reward * efficiency_factor
+            # Scale factor: 1% improvement (0.01) -> +1.0 added reward
+            # This makes the reward relative to how much we improved
+            imp_bonus = rel_imp * 100.0
             
-            # PERFORMANCE-GATED SWITCH BONUS
-            # Only reward switching when it actually helped
             if switched:
-                # Successful switch deserves a meaningful bonus
-                switch_success_bonus = 0.2
-                base_reward += switch_success_bonus
-            
-            return base_reward
-        
-        # === NO IMPROVEMENT CASE ===
-        else:
-            # Base penalty for wasting FEs
-            base_penalty = -0.2
-            
-            # Credibility-weighted penalty:
-            # - High credibility (0.8+): algo usually works, just bad luck → -0.2
-            # - Medium credibility (0.5): normal penalty → -0.25
-            # - Low credibility (0.0): you chose a known-bad algo → -0.3
-            credibility_penalty = -0.1 * (1.0 - credibility)
-            
-            # FRESHNESS BONUS (preserves diversity even when no improvement)
-            # If this algorithm has been used less than average, reduce penalty
-            # This encourages trying under-explored algorithms
-            freshness_bonus = 0.0
-            if self.total_steps > 0:
-                avg_usage = self.total_steps / self.num_algorithms
-                algo_usage = self.algo_usage_counts[algo_idx] if 0 <= algo_idx < self.num_algorithms else avg_usage
-                
-                if algo_usage < avg_usage * 0.5:
-                    # Under-used algorithm: reduce penalty to encourage exploration
-                    freshness_bonus = 0.1
-                elif algo_usage > avg_usage * 1.5:
-                    # Over-used algorithm: slight extra penalty
-                    freshness_bonus = -0.05
-            
-            # EARLY EXPLORATION MULTIPLIER
-            # Early in episode: softer penalties to encourage exploration
-            # Late in episode: full penalties to focus on best algorithms
-            if progress < 0.2:
-                exploration_multiplier = 0.5  # Half penalty early
-            elif progress < 0.4:
-                exploration_multiplier = 0.75
+                # Switching to an algorithm that improves -> MAX REWARD + BONUS
+                return 1.0 + imp_bonus
             else:
-                exploration_multiplier = 1.0  # Full penalty later
-            
-            total_penalty = (base_penalty + credibility_penalty) * exploration_multiplier + freshness_bonus
-            
-            return total_penalty
+                # Sticking with an algorithm that improves -> HIGH REWARD + BONUS
+                return 0.7 + imp_bonus
+        else:
+            # === CASE 2: We did NOT improve ===
+            if not switched:
+                # Sticking with an algorithm that doesn't improve -> HIGH NEGATIVE REWARD
+                # This is the critical signal to force switching
+                return -1.0
+            else:
+                # Switching to an algorithm that doesn't improve -> LOW NEGATIVE REWARD
+                # We tried to switch (good behavior) but it didn't work (bad outcome)
+                # Differentiate slightly based on whether it was a "smart" switch
+                algo_success = success_rates[algo_idx]
+                algo_fresh = freshness[algo_idx]
+                
+                if algo_fresh > 0.5:
+                    # Switch to fresh algo (exploration)
+                    return -0.1
+                elif algo_success > 0.5:
+                    # Switch to proven algo
+                    return -0.2
+                else:
+                    # Switch to random/bad algo
+                    return -0.3

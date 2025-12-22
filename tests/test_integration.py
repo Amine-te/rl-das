@@ -148,24 +148,25 @@ class TestStateExtractor:
         assert abs(la[1] - 0.5) < 0.1
     
     def test_stagnation_update(self):
-        """Test stagnation and credibility update."""
+        """Test stagnation and success rate update."""
         extractor = StateExtractor(num_algorithms=3)
         
-        # Initial credibility should be 0.5
-        assert np.all(extractor.credibility_scores == 0.5)
+        # Initial success rates should be 0.5 (unknown)
+        rates = extractor.get_success_rates()
+        assert np.all(rates == 0.5)
         
         # Simulate improvement
-        extractor.update_stagnation(0, improved=True, improvement_magnitude=0.1)
+        extractor.update_stagnation(0, improved=True)
         
-        # Credibility should increase
-        assert extractor.credibility_scores[0] > 0.5
-        # Recent improvement should be recorded
-        assert extractor.recent_improvements[0] > 0
+        # Success rate should increase
+        rates = extractor.get_success_rates()
+        assert rates[0] == 1.0  # 1 success out of 1 attempt
         
         # Simulate failure
         extractor.update_stagnation(0, improved=False)
-        # Credibility should decrease
-        assert extractor.credibility_scores[0] < 0.65
+        # Success rate should be 0.5 (1 success out of 2 attempts)
+        rates = extractor.get_success_rates()
+        assert rates[0] == 0.5
 
 
 class TestRewardCalculator:
@@ -176,85 +177,92 @@ class TestRewardCalculator:
         calc = RewardCalculator(max_fes=1000)
         calc.reset(initial_cost=100.0)
         
-        # Improvement of 10%
+        # Improvement, stayed with algorithm
         reward = calc.compute_step_reward(
             prev_cost=100.0,
             curr_cost=90.0,
-            fes_used=100
+            algo_idx=0,
+            switched=False,
+            prev_improved=True
         )
         
-        assert reward > 0  # Improvement should give positive reward
+        # Improvement = 10, Initial = 100 -> 10% improvement
+        # Bonus = 0.10 * 100 = 10.0
+        # Total = 0.7 + 10.0 = 10.7
+        assert reward > 10.0  # Should include significant relative bonus
     
     def test_no_improvement_reward(self):
-        """Test reward when no improvement."""
+        """Test reward when no improvement and stayed."""
         calc = RewardCalculator(max_fes=1000, num_algorithms=4)
         calc.reset(initial_cost=100.0)
         
+        # No improvement + stayed = should be punished
         reward = calc.compute_step_reward(
             prev_cost=100.0,
             curr_cost=100.0,
-            fes_used=100,
-            credibility=0.5,
-            algo_idx=0
-        )
-        
-        assert reward < 0  # No improvement = negative reward
-    
-    def test_switch_bonus(self):
-        """Test switch bonus on successful switch."""
-        calc = RewardCalculator(max_fes=1000, num_algorithms=4)
-        calc.reset(initial_cost=100.0)
-        
-        # Improvement without switch
-        reward1 = calc.compute_step_reward(
-            prev_cost=100.0,
-            curr_cost=90.0,
-            fes_used=100,
+            algo_idx=0,
             switched=False,
-            algo_idx=0
+            prev_improved=True
         )
         
-        calc.reset(initial_cost=100.0)
-        
-        # Same improvement with switch
-        reward2 = calc.compute_step_reward(
-            prev_cost=100.0,
-            curr_cost=90.0,
-            fes_used=100,
-            switched=True,
-            algo_idx=1
-        )
-        
-        # Switch bonus should make reward2 > reward1
-        assert reward2 > reward1
+        assert reward == -1.0  # Strong penalty for staying when stuck
     
-    def test_credibility_penalty(self):
-        """Test credibility-weighted penalty."""
+    def test_switch_behavior(self):
+        """Test stick-with-winner vs switch behavior."""
         calc = RewardCalculator(max_fes=1000, num_algorithms=4)
         calc.reset(initial_cost=100.0)
         
-        # No improvement with high credibility
-        reward_high = calc.compute_step_reward(
+        # Improvement + stayed = best reward
+        reward_stayed = calc.compute_step_reward(
             prev_cost=100.0,
-            curr_cost=100.0,
-            fes_used=100,
-            credibility=0.9,
-            algo_idx=0
+            curr_cost=90.0,
+            algo_idx=0,
+            switched=False,
+            prev_improved=True
         )
         
         calc.reset(initial_cost=100.0)
         
-        # No improvement with low credibility
-        reward_low = calc.compute_step_reward(
+        # Improvement + switched = good but lower
+        reward_switched = calc.compute_step_reward(
             prev_cost=100.0,
-            curr_cost=100.0,
-            fes_used=100,
-            credibility=0.1,
-            algo_idx=1
+            curr_cost=90.0,
+            algo_idx=1,
+            switched=True,
+            prev_improved=False
         )
         
-        # Low credibility should have harsher penalty
-        assert reward_low < reward_high
+        # Staying with winner should be better than unnecessary switch
+        # But wait, logic changed: Switch+Improve (1.0+bonus) > Stay+Improve (0.7+bonus)
+        assert reward_switched > reward_stayed
+    
+    def test_switch_when_stuck(self):
+        """Test that switching when stuck is better than staying."""
+        calc = RewardCalculator(max_fes=1000, num_algorithms=4)
+        calc.reset(initial_cost=100.0)
+        
+        # No improvement + stayed = punished
+        reward_stayed = calc.compute_step_reward(
+            prev_cost=100.0,
+            curr_cost=100.0,
+            algo_idx=0,
+            switched=False,
+            prev_improved=False
+        )
+        
+        calc.reset(initial_cost=100.0)
+        
+        # No improvement + switched = less punishment
+        reward_switched = calc.compute_step_reward(
+            prev_cost=100.0,
+            curr_cost=100.0,
+            algo_idx=1,
+            switched=True,
+            prev_improved=False
+        )
+        
+        # Switching when stuck should be better than staying
+        assert reward_switched > reward_stayed
 
 
 class TestContextManager:
@@ -356,7 +364,8 @@ class TestDASEnvironment:
             interval_fes=500
         )
         
-        assert env.state_dim == 5 + 4 * 3  # 5 LA + 4*num_algos features = 17
+        # 18 = 5 LA + 1 last_improved + 3*num_algos features
+        assert env.state_dim == 5 + 1 + 3 * 3  # 18 for 3 algos
         assert env.action_dim == 3
     
     def test_environment_reset(self):
@@ -471,7 +480,7 @@ class TestDASGymEnv:
             interval_fes=500
         )
         
-        assert env.observation_space.shape[0] == 5 + 4 * 3  # 17 for 3 algos
+        assert env.observation_space.shape[0] == 5 + 1 + 3 * 3  # 15 for 3 algos
         assert env.action_space.n == 3
     
     def test_gym_env_spaces(self):

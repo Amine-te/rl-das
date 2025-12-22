@@ -1,12 +1,13 @@
 """
-Training script for RL-DAS with Stable Baselines3 PPO.
+Training script for RL-DAS with Stable Baselines3 DQN.
 
-Trains an RL agent to dynamically select algorithms for TSP optimization.
+Trains a DQN agent to dynamically select algorithms for TSP optimization.
+DQN is often better for discrete action spaces like algorithm selection.
 
 Usage:
-    python train.py --timesteps 1000000 --num-cities 50 --num-instances 100
+    python train_dqn.py --timesteps 500000 --num-instances 200 --checkpoint-dir checkpoints/dqn_run1
     
-Algorithm Selection (4 algorithms for balanced training):
+Algorithm Selection (4 algorithms):
     - GA (Genetic Algorithm): Population-based exploration
     - TS (Tabu Search): Memory-based intensification
     - SA (Simulated Annealing): Probabilistic balance
@@ -21,13 +22,13 @@ from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
-from stable_baselines3 import PPO
+from stable_baselines3 import DQN
 from stable_baselines3.common.callbacks import (
     CheckpointCallback,
     EvalCallback,
     CallbackList
 )
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 
 # Add project to path
@@ -41,12 +42,12 @@ from core import DASGymEnv
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description='Train RL agent for Dynamic Algorithm Selection on TSP',
+        description='Train DQN agent for Dynamic Algorithm Selection on TSP',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
     # Training parameters
-    parser.add_argument('--timesteps', type=int, default=1000000,
+    parser.add_argument('--timesteps', type=int, default=500000,
                         help='Total training timesteps')
     parser.add_argument('--eval-freq', type=int, default=10000,
                         help='Evaluation frequency (in timesteps)')
@@ -55,7 +56,7 @@ def parse_args():
     
     # Problem parameters
     parser.add_argument('--num-cities', type=int, default=None,
-                        help='Number of cities (fixed size). If None, uses variable sizes for generalization')
+                        help='Number of cities (fixed size). If None, uses variable sizes')
     parser.add_argument('--min-cities', type=int, default=30,
                         help='Minimum number of cities for variable-size training')
     parser.add_argument('--max-cities', type=int, default=75,
@@ -74,35 +75,41 @@ def parse_args():
     parser.add_argument('--population-size', type=int, default=30,
                         help='Population size for environment tracking')
     
-    # PPO hyperparameters (from paper)
-    parser.add_argument('--learning-rate', type=float, default=1e-3,
-                        help='PPO learning rate')
-    parser.add_argument('--n-steps', type=int, default=2048,
-                        help='Steps per update')
+    # DQN hyperparameters
+    parser.add_argument('--learning-rate', type=float, default=1e-4,
+                        help='DQN learning rate')
+    parser.add_argument('--buffer-size', type=int, default=100000,
+                        help='Replay buffer size')
+    parser.add_argument('--learning-starts', type=int, default=1000,
+                        help='Number of steps before learning starts')
     parser.add_argument('--batch-size', type=int, default=64,
                         help='Minibatch size')
-    parser.add_argument('--n-epochs', type=int, default=10,
-                        help='PPO epochs per update')
     parser.add_argument('--gamma', type=float, default=0.99,
                         help='Discount factor')
-    parser.add_argument('--gae-lambda', type=float, default=0.95,
-                        help='GAE lambda')
-    parser.add_argument('--clip-range', type=float, default=0.2,
-                        help='PPO clip range')
-    parser.add_argument('--ent-coef', type=float, default=0.02,
-                        help='Entropy coefficient for exploration (increased to prevent mode collapse)')
+    parser.add_argument('--tau', type=float, default=0.005,
+                        help='Soft update coefficient for target network')
+    parser.add_argument('--target-update-interval', type=int, default=1000,
+                        help='Update target network every N steps')
+    parser.add_argument('--train-freq', type=int, default=4,
+                        help='Update the model every N steps')
+    parser.add_argument('--gradient-steps', type=int, default=1,
+                        help='Gradient steps per update')
     
-    # Parallelization
-    parser.add_argument('--num-envs', type=int, default=4,
-                        help='Number of parallel environments')
+    # Exploration parameters
+    parser.add_argument('--exploration-fraction', type=float, default=0.3,
+                        help='Fraction of training for epsilon decay')
+    parser.add_argument('--exploration-initial-eps', type=float, default=1.0,
+                        help='Initial exploration rate')
+    parser.add_argument('--exploration-final-eps', type=float, default=0.05,
+                        help='Final exploration rate')
     
     # Checkpointing and logging
     parser.add_argument('--checkpoint-dir', type=str, default='checkpoints',
-                        help='Base directory for checkpoints, logs, and models (creates subdirs: checkpoints/, logs/)')
+                        help='Base directory for checkpoints, logs, and models')
     parser.add_argument('--checkpoint-freq', type=int, default=50000,
                         help='Checkpoint save frequency (timesteps)')
     parser.add_argument('--run-name', type=str, default=None,
-                        help='Name for this training run (auto-generated if not specified)')
+                        help='Name for this training run')
     
     # Reproducibility
     parser.add_argument('--seed', type=int, default=42,
@@ -123,38 +130,21 @@ def generate_tsp_instances(
     instance_type: str = 'random',
     seed: int = 42
 ) -> List[TSPProblem]:
-    """
-    Generate diverse TSP problem instances.
-    
-    Args:
-        num_instances: Number of instances to generate
-        num_cities: Fixed number of cities (if None, uses variable sizes)
-        min_cities: Minimum cities for variable-size training
-        max_cities: Maximum cities for variable-size training
-        instance_type: Distribution type
-        seed: Random seed
-        
-    Returns:
-        List of TSPProblem instances
-    """
+    """Generate diverse TSP problem instances."""
     np.random.seed(seed)
     instances = []
     
-    # Determine distributions to use
     if instance_type == 'mixed':
         distributions = ['random', 'clustered', 'grid']
     else:
         distributions = [instance_type]
     
     for i in range(num_instances):
-        # Select distribution
         dist = distributions[i % len(distributions)]
         
-        # Select size (fixed or variable)
         if num_cities is not None:
             size = num_cities
         else:
-            # Variable size for better generalization
             size = np.random.randint(min_cities, max_cities + 1)
         
         problem = TSPProblem(
@@ -167,28 +157,16 @@ def generate_tsp_instances(
     if num_cities is not None:
         print(f"Generated {len(instances)} TSP instances ({instance_type}, {num_cities} cities)")
     else:
-        print(f"Generated {len(instances)} TSP instances ({instance_type}, {min_cities}-{max_cities} cities, variable size)")
+        print(f"Generated {len(instances)} TSP instances ({instance_type}, {min_cities}-{max_cities} cities)")
     
     return instances
 
 
 def create_env(problem_instances: List[TSPProblem], args, is_eval: bool = False):
-    """
-    Create a single DAS environment.
-    
-    Args:
-        problem_instances: List of problem instances to sample from
-        args: Command line arguments
-        is_eval: Whether this is an evaluation environment
-        
-    Returns:
-        Monitored DASGymEnv instance
-    """
+    """Create a single DAS environment."""
     def _make_env():
-        # Sample a random problem instance
         problem = np.random.choice(problem_instances)
         
-        # Create algorithms with problem-specific tuning
         algorithms = [
             GeneticAlgorithm(
                 problem,
@@ -217,7 +195,6 @@ def create_env(problem_instances: List[TSPProblem], args, is_eval: bool = False)
             )
         ]
         
-        # Create environment
         env = DASGymEnv(
             problem=problem,
             algorithms=algorithms,
@@ -226,66 +203,39 @@ def create_env(problem_instances: List[TSPProblem], args, is_eval: bool = False)
             population_size=args.population_size
         )
         
-        # Wrap with Monitor for logging
         env = Monitor(env)
-        
         return env
     
     return _make_env
 
 
-def make_vec_env(problem_instances: List[TSPProblem], args, n_envs: int):
-    """
-    Create vectorized environments for parallel training.
-    
-    Args:
-        problem_instances: List of problem instances
-        args: Command line arguments
-        n_envs: Number of parallel environments
-        
-    Returns:
-        Vectorized environment
-    """
-    env_fns = [create_env(problem_instances, args) for _ in range(n_envs)]
-    
-    if n_envs == 1:
-        return DummyVecEnv(env_fns)
-    else:
-        # Use SubprocVecEnv for true parallelism
-        return SubprocVecEnv(env_fns)
+def make_vec_env(problem_instances: List[TSPProblem], args):
+    """Create vectorized environment for training."""
+    # DQN only supports single environment
+    env_fn = create_env(problem_instances, args)
+    return DummyVecEnv([env_fn])
 
 
 def setup_callbacks(args, eval_env):
-    """
-    Setup training callbacks for checkpointing and evaluation.
-    
-    Args:
-        args: Command line arguments
-        eval_env: Evaluation environment
-        
-    Returns:
-        CallbackList with all callbacks
-    """
+    """Setup training callbacks for checkpointing and evaluation."""
     callbacks = []
     
-    # Checkpoint callback
     checkpoints_path = os.path.join(args.checkpoint_dir, 'checkpoints')
     checkpoint_callback = CheckpointCallback(
-        save_freq=args.checkpoint_freq // args.num_envs,  # Adjust for parallel envs
+        save_freq=args.checkpoint_freq,
         save_path=checkpoints_path,
         name_prefix=f'{args.run_name}_checkpoint',
-        save_replay_buffer=False,
+        save_replay_buffer=True,
         save_vecnormalize=False
     )
     callbacks.append(checkpoint_callback)
     
-    # Evaluation callback (saves best_model.zip in checkpoint_dir)
     logs_path = os.path.join(args.checkpoint_dir, 'logs')
     eval_callback = EvalCallback(
         eval_env,
-        best_model_save_path=args.checkpoint_dir,  # best_model.zip in base dir
+        best_model_save_path=args.checkpoint_dir,
         log_path=logs_path,
-        eval_freq=args.eval_freq // args.num_envs,  # Adjust for parallel envs
+        eval_freq=args.eval_freq,
         n_eval_episodes=args.eval_episodes,
         deterministic=True,
         render=False
@@ -296,12 +246,7 @@ def setup_callbacks(args, eval_env):
 
 
 def train(args):
-    """
-    Main training function.
-    
-    Args:
-        args: Command line arguments
-    """
+    """Main training function."""
     # Setup directory structure
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     checkpoints_path = os.path.join(args.checkpoint_dir, 'checkpoints')
@@ -312,21 +257,21 @@ def train(args):
     # Generate run name if not provided
     if args.run_name is None:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        args.run_name = f'rl_das_tsp{args.num_cities}_{timestamp}'
+        args.run_name = f'dqn_das_tsp{args.num_cities}_{timestamp}'
     
     print("=" * 60)
-    print(f"RL-DAS Training: {args.run_name}")
+    print(f"RL-DAS DQN Training: {args.run_name}")
     print("=" * 60)
     if args.num_cities is not None:
         print(f"Problem: TSP with {args.num_cities} cities ({args.instance_type})")
     else:
-        print(f"Problem: TSP with {args.min_cities}-{args.max_cities} cities (variable size, {args.instance_type})")
+        print(f"Problem: TSP with {args.min_cities}-{args.max_cities} cities (variable, {args.instance_type})")
     print(f"Algorithms: GA, TS, SA, ILS (4 algorithms)")
     print(f"Max FEs: {args.max_fes}, Interval: {args.interval_fes}")
     print(f"Training timesteps: {args.timesteps:,}")
-    print(f"Parallel environments: {args.num_envs}")
     print(f"Learning rate: {args.learning_rate}")
-    print(f"Entropy coefficient: {args.ent_coef}")
+    print(f"Buffer size: {args.buffer_size}")
+    print(f"Exploration: {args.exploration_initial_eps} -> {args.exploration_final_eps} over {args.exploration_fraction*100:.0f}%")
     print("=" * 60)
     
     # Set random seeds
@@ -342,47 +287,48 @@ def train(args):
         seed=args.seed
     )
     
-    # Generate separate evaluation instances
     eval_instances = generate_tsp_instances(
         num_instances=max(10, args.num_instances // 10),
         num_cities=args.num_cities,
         min_cities=args.min_cities,
         max_cities=args.max_cities,
         instance_type=args.instance_type,
-        seed=args.seed + 10000  # Different seed
+        seed=args.seed + 10000
     )
     
     # Create environments
     print("\nCreating environments...")
-    train_env = make_vec_env(train_instances, args, args.num_envs)
-    eval_env = make_vec_env(eval_instances, args, 1)  # Single eval env
+    train_env = make_vec_env(train_instances, args)
+    eval_env = make_vec_env(eval_instances, args)
     
     # Setup callbacks
     callbacks = setup_callbacks(args, eval_env)
     
-    # Create or load PPO model
+    # Create or load DQN model
     if args.resume:
         print(f"\nResuming training from: {args.resume}")
-        logs_path = os.path.join(args.checkpoint_dir, 'logs')
-        model = PPO.load(
+        model = DQN.load(
             args.resume,
             env=train_env,
             tensorboard_log=logs_path
         )
     else:
-        print("\nInitializing PPO model...")
-        logs_path = os.path.join(args.checkpoint_dir, 'logs')
-        model = PPO(
+        print("\nInitializing DQN model...")
+        model = DQN(
             policy='MlpPolicy',
             env=train_env,
             learning_rate=args.learning_rate,
-            n_steps=args.n_steps,
+            buffer_size=args.buffer_size,
+            learning_starts=args.learning_starts,
             batch_size=args.batch_size,
-            n_epochs=args.n_epochs,
             gamma=args.gamma,
-            gae_lambda=args.gae_lambda,
-            clip_range=args.clip_range,
-            ent_coef=args.ent_coef,
+            tau=args.tau,
+            target_update_interval=args.target_update_interval,
+            train_freq=args.train_freq,
+            gradient_steps=args.gradient_steps,
+            exploration_fraction=args.exploration_fraction,
+            exploration_initial_eps=args.exploration_initial_eps,
+            exploration_final_eps=args.exploration_final_eps,
             verbose=1,
             tensorboard_log=logs_path,
             seed=args.seed
@@ -410,7 +356,6 @@ def train(args):
         print("\n\nTraining interrupted by user!")
     
     # Save final model
-    checkpoints_path = os.path.join(args.checkpoint_dir, 'checkpoints')
     final_model_path = os.path.join(checkpoints_path, f'{args.run_name}_final')
     model.save(final_model_path)
     print(f"\n✓ Final model saved to: {final_model_path}")
@@ -424,11 +369,11 @@ def train(args):
     print("=" * 60)
     print(f"Run name: {args.run_name}")
     print(f"Output directory: {args.checkpoint_dir}")
-    print(f"  - Checkpoints: {os.path.join(args.checkpoint_dir, 'checkpoints')}")
+    print(f"  - Checkpoints: {checkpoints_path}")
     print(f"  - Best model: {os.path.join(args.checkpoint_dir, 'best_model.zip')}")
-    print(f"  - TensorBoard: {os.path.join(args.checkpoint_dir, 'logs')}")
+    print(f"  - TensorBoard: {logs_path}")
     print(f"\nTo view training progress:")
-    print(f"  tensorboard --logdir {os.path.join(args.checkpoint_dir, 'logs')}")
+    print(f"  tensorboard --logdir {logs_path}")
 
 
 def main():

@@ -75,6 +75,7 @@ class DASEnvironment:
         self.episode_step = 0
         self.stagnation_counter = 0
         self.last_best_cost = float('inf')
+        self.prev_improved = False  # Track if previous step improved
         self.done = False
     
     @property
@@ -114,6 +115,7 @@ class DASEnvironment:
         self.episode_step = 0
         self.stagnation_counter = 0
         self.cumulative_reward = 0.0
+        self.prev_improved = False
         self.done = False
         
         # Initialize all algorithms
@@ -217,30 +219,22 @@ class DASEnvironment:
         # Determine if we switched
         switched = self.last_action is not None and action != self.last_action
         
-        # Get credibility of selected algorithm
-        credibility = self.state_extractor.credibility_scores[action]
+        # Did we improve?
+        improved = new_cost < prev_best_cost - 1e-9
         
-        # Compute improvement magnitude for state update
-        if self.reward_calculator.initial_cost and self.reward_calculator.initial_cost > 0:
-            improvement_magnitude = (prev_best_cost - new_cost) / self.reward_calculator.initial_cost
-        else:
-            improvement_magnitude = 0.0
-        
-        # Compute reward with new parameters
+        # Compute reward with new stick-with-winner logic
         reward = self.reward_calculator.compute_step_reward(
             prev_cost=prev_best_cost,
             curr_cost=new_cost,
-            fes_used=fes_used,
-            progress=progress,
+            algo_idx=action,
             switched=switched,
-            credibility=credibility,
-            algo_idx=action
+            prev_improved=self.prev_improved
         )
         self.cumulative_reward += reward
         
-        # Update stagnation tracking with improvement magnitude
-        improved = new_cost < prev_best_cost
-        self.state_extractor.update_stagnation(action, improved, improvement_magnitude)
+        # Update tracking
+        self.prev_improved = improved
+        self.state_extractor.update_stagnation(action, improved)
         
         # Update context
         self.context_manager.update_common_context(
