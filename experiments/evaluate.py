@@ -11,7 +11,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 import time
 
 import numpy as np
@@ -115,7 +115,13 @@ def evaluate_rl_agent(model, model_type, problem, args, instance_id, vec_norm=No
     # Create env
     def make_env():
         algorithms = create_algorithms(problem)
-        return DASGymEnv(problem, algorithms, args.max_fes, args.interval_fes, args.population_size)
+        return DASGymEnv(
+            problem=problem, 
+            algorithms=algorithms, 
+            max_fes=args.max_fes, 
+            interval_fes=args.interval_fes, 
+            population_size=args.population_size
+        )
         
     env = DummyVecEnv([make_env])
     
@@ -132,7 +138,14 @@ def evaluate_rl_agent(model, model_type, problem, args, instance_id, vec_norm=No
     
     # Get initial info (from unwrapped env)
     unwrapped = env.envs[0]
-    initial_cost = unwrapped.problem.evaluate_tour(unwrapped.current_solution)
+    # Handle access to inner DASEnvironment
+    if hasattr(unwrapped, 'das_env'):
+         inner_env = unwrapped.das_env
+    else:
+         # Fallback if unwrapped is actually DASEnvironment (unlikely with Gym wrapper)
+         inner_env = unwrapped
+         
+    initial_cost = inner_env.last_best_cost
     
     episode_data = {
         'instance_id': instance_id,
@@ -180,17 +193,63 @@ def evaluate_rl_agent(model, model_type, problem, args, instance_id, vec_norm=No
     # Final stats
     episode_data['final_cost'] = float(info[0]['best_cost'])
     episode_data['total_steps'] = step_count
-    episode_data['total_fes'] = unwrapped.evaluations_used
-    episode_data['switch_count'] = unwrapped.switch_count
+    episode_data['total_fes'] = inner_env.current_fes
+    episode_data['switch_count'] = inner_env.context_manager.get_switch_count()
     
     return episode_data
 
 
-def format_episode_report(episode_data: Dict, algo_names: List[str]) -> str:
+def run_baselines_comparison(problem, args) -> Dict[str, float]:
+    """Run all baselines on the problem."""
+    results = {}
+    algorithms = create_algorithms(problem)
+    algo_names = ['GA', 'TS', 'SA', 'ILS']
+    
+    for name, algo in zip(algo_names, algorithms):
+        # Reset/Initialize
+        algo.initialize()
+        
+        # Run for max_fes
+        # Most algos here are iterative. We can just step them until max_fes.
+        # But their step() uses interval.
+        # We can just use a loop.
+        current_fes = 0
+        best_cost = float('inf')
+        
+        # Initial solution
+        sol = problem.generate_random_solution()
+        cost = problem.evaluate(sol)
+        algo.inject_solution(sol, cost)
+        
+        while current_fes < args.max_fes:
+            fes_allowed = min(args.interval_fes, args.max_fes - current_fes)
+            _, cost = algo.step(fes_allowed)
+            current_fes += fes_allowed # approx
+            if cost < best_cost:
+                best_cost = cost
+                
+        results[name] = best_cost
+        
+    return results
+
+
+def format_episode_report(episode_data: Dict, algo_names: List[str], baseline_results: Optional[Dict] = None) -> str:
     """Format detailed report."""
     lines = []
     lines.append(f"INSTANCE: {episode_data['problem_name']}")
     lines.append(f"Initial: {episode_data['initial_cost']:.2f} -> Final: {episode_data['final_cost']:.2f}")
+    
+    if baseline_results:
+        best_baseline = min(baseline_results.values())
+        rl_cost = episode_data['final_cost']
+        gap = ((rl_cost - best_baseline) / best_baseline) * 100
+        
+        lines.append("Baselines:")
+        for name, cost in baseline_results.items():
+            lines.append(f"  {name}: {cost:.2f}")
+        lines.append(f"  Best Baseline: {best_baseline:.2f}")
+        lines.append(f"  RL Gap: {gap:+.2f}% (Negative is better)")
+        
     lines.append("-" * 60)
     lines.append(f"{'Step':<5} {'Act':<5} {'Algo':<5} {'Cost':<10} {'Rew':<6} {'Introspection'}")
     
@@ -243,14 +302,33 @@ def evaluate(args):
     results = []
     logs = []
     algo_names = ['GA', 'TS', 'SA', 'ILS']
+    baseline_agg = {'r_wins': 0, 'r_gap': []}
     
     for i, problem in enumerate(instances):
         if args.verbose:
             print(f"Eval {i+1}/{len(instances)}: {getattr(problem, 'name', 'Synthetic')}")
             
+        # RL Eval
         data = evaluate_rl_agent(model, model_type, problem, args, i, vec_norm)
         results.append(data)
-        logs.append(format_episode_report(data, algo_names))
+        
+        # Baselines Eval
+        b_results = None
+        if args.run_baselines:
+            print(f"  Running baselines for {getattr(problem, 'name', 'Instance')}...")
+            b_results = run_baselines_comparison(problem, args)
+            best_b = min(b_results.values())
+            rl_cost = data['final_cost']
+            
+            # Stats
+            if rl_cost < best_b:
+                baseline_agg['r_wins'] += 1
+            gap = ((rl_cost - best_b) / best_b) * 100
+            baseline_agg['r_gap'].append(gap)
+            
+            print(f"  RL: {rl_cost:.2f} | Best Baseline: {best_b:.2f} | Gap: {gap:+.2f}%")
+        
+        logs.append(format_episode_report(data, algo_names, b_results))
         
     # 4. Report
     costs = [r['final_cost'] for r in results]
@@ -260,6 +338,14 @@ def evaluate(args):
     print(f"Mean Cost: {np.mean(costs):.2f} +/- {np.std(costs):.2f}")
     print(f"Best:      {np.min(costs):.2f}")
     print(f"Worst:     {np.max(costs):.2f}")
+    
+    if args.run_baselines and baseline_agg['r_gap']:
+        win_rate = (baseline_agg['r_wins'] / len(instances)) * 100
+        mean_gap = np.mean(baseline_agg['r_gap'])
+        print("-" * 60)
+        print(f"BASELINE COMPARISON:")
+        print(f"RL Win Rate: {win_rate:.1f}%")
+        print(f"Mean Gap:    {mean_gap:+.2f}% (Negative = RL Better)")
     
     # Save to file
     os.makedirs(args.results_dir, exist_ok=True)
@@ -271,6 +357,11 @@ def evaluate(args):
     out_path = os.path.join(args.results_dir, f"{fname}.txt")
     with open(out_path, 'w') as f:
         f.write(f"EVALUATION REPORT: {fname}\n")
+        f.write(f"Mean Cost: {np.mean(costs):.2f}\n")
+        if args.run_baselines and baseline_agg['r_gap']:
+             f.write(f"RL Win Rate: {win_rate:.1f}%\n")
+             f.write(f"Mean Gap:    {mean_gap:+.2f}%\n")
+        f.write("\n" + "="*60 + "\n\n")
         f.write("\n".join(logs))
         f.write(f"\nSUMMARY:\nMean: {np.mean(costs)}\nStd: {np.std(costs)}\n")
         
