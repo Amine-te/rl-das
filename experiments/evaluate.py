@@ -374,7 +374,6 @@ def format_report(args, model_type, all_results, all_baselines, total_time, time
 def evaluate(args):
     """Main evaluation loop."""
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    start_time = time.time()
     
     # 1. Load Model
     print(f"Loading model: {args.model}")
@@ -408,9 +407,10 @@ def evaluate(args):
              
     print(f"Evaluating on {len(instances)} instances.")
     
-    # 3. Evaluation Loop
+    # 3. Evaluation Loop (only track RL time, not total time with baselines)
     all_results = []
     all_baselines = [] if args.run_baselines else None
+    rl_total_time = 0.0  # Track only RL evaluation time
     
     for i, problem in enumerate(instances):
         if args.verbose:
@@ -419,6 +419,7 @@ def evaluate(args):
         # RL Eval
         data = evaluate_rl_agent(model, model_type, problem, args, i, vec_norm)
         all_results.append(data)
+        rl_total_time += data['time']  # Accumulate only RL time
         
         # Baselines Eval
         if args.run_baselines:
@@ -432,7 +433,7 @@ def evaluate(args):
             
             print(f"  RL: {rl_cost:.2f} | Best Baseline: {best_b:.2f} | Gap: {gap:+.2f}%")
     
-    total_time = time.time() - start_time
+    total_time = rl_total_time  # Use only RL time for the report
     
     # 4. Generate and Save Report
     report = format_report(args, model_type, all_results, all_baselines, total_time, timestamp)
