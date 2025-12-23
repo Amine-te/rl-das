@@ -34,15 +34,9 @@ from stable_baselines3.common.monitor import Monitor
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from problems import TSPProblem
-from utils.tsp_loader import load_all_instances, list_available_instances
+from utils.tsplib_loader import load_all_instances, list_available_instances
 from algorithms import GeneticAlgorithm, TabuSearch, SimulatedAnnealing, IteratedLocalSearch
-from core import (
-    DASGymEnv,
-    StagnationTermination,
-    PhaseTermination,
-    GenerationTermination,
-    MoveCountTermination
-)
+from core import DASGymEnv
 
 
 def parse_args():
@@ -92,36 +86,16 @@ def parse_args():
                         help='TSP instance distribution type')
     
     # RL-DAS environment parameters
-    parser.add_argument('--max-fes', type=int, default=30000,
+    parser.add_argument('--max-fes', type=int, default=20000,
                         help='Maximum function evaluations per episode')
+    parser.add_argument('--interval-fes', type=int, default=1000,
+                        help='FEs per decision interval')
     parser.add_argument('--population-size', type=int, default=30,
                         help='Population size for environment tracking')
     parser.add_argument('--normalize', action='store_true', default=True,
                         help='Normalize observations and rewards (Recommended)')
     parser.add_argument('--no-normalize', action='store_false', dest='normalize',
                         help='Disable normalization')
-    
-    # Macro-action parameters (NEW)
-    parser.add_argument('--use-macro-actions', action='store_true', default=True,
-                        help='Use macro-actions (algorithms run until natural termination)')
-    parser.add_argument('--no-macro-actions', action='store_false', dest='use_macro_actions',
-                        help='Disable macro-actions (use fixed interval mode)')
-    parser.add_argument('--stagnation-threshold', type=int, default=5,
-                        help='ILS: terminate after N non-improving iterations')
-    parser.add_argument('--sa-phase-steps', type=int, default=50,
-                        help='SA: steps per cooling phase')
-    parser.add_argument('--ga-generations', type=int, default=5,
-                        help='GA: generations per macro-action')
-    parser.add_argument('--ts-moves', type=int, default=100,
-                        help='TS: moves per macro-action')
-    parser.add_argument('--max-fes-per-macro', type=int, default=1000,
-                        help='Maximum FES per macro-action (safety limit)')
-    parser.add_argument('--micro-step-fes', type=int, default=500,
-                        help='FES per internal micro-step during macro-action')
-    
-    # Legacy fixed-interval mode
-    parser.add_argument('--interval-fes', type=int, default=1000,
-                        help='FEs per decision interval (only used if --no-macro-actions)')
 
     # DQN Hyperparameters
     parser.add_argument('--dqn-lr', type=float, default=1e-4, help='DQN learning rate')
@@ -148,7 +122,7 @@ def parse_args():
     # Checkpointing
     parser.add_argument('--checkpoint-dir', type=str, default='checkpoints',
                         help='Base directory for checkpoints/logs')
-    parser.add_argument('--checkpoint-freq', type=int, default=10000,
+    parser.add_argument('--checkpoint-freq', type=int, default=50000,
                         help='Checkpoint save frequency')
     parser.add_argument('--resume', type=str, default=None,
                         help='Path to checkpoint to resume from')
@@ -210,35 +184,21 @@ def load_tsplib_instances(tsplib_dir: str, max_cities: int = None, augment: bool
 
 
 def create_env(problem_instances: List[TSPProblem], args, is_eval: bool = False):
-    """Create a single DAS environment with macro-action support."""
+    """Create a single DAS environment."""
     def _make_env():
         problem = np.random.choice(problem_instances)
         
         algorithms = [
             GeneticAlgorithm(problem, population_size=min(50, problem.size), tournament_size=3),
-            SimulatedAnnealing(problem, initial_temperature=100.0, cooling_rate=0.995, min_temperature=0.01),
             TabuSearch(problem, tabu_tenure=min(20, problem.size // 2), neighborhood_size=min(50, problem.size * 2), aspiration_enabled=True),
+            SimulatedAnnealing(problem, initial_temperature=100.0, cooling_rate=0.995, min_temperature=0.01),
             IteratedLocalSearch(problem, perturbation_strength=max(2, problem.size // 10), local_search_max_iters=30)
         ]
-        
-        # Create termination conditions if using macro-actions
-        if args.use_macro_actions:
-            termination_conditions = [
-                GenerationTermination(generations=args.ga_generations, max_fes=args.max_fes_per_macro),  # GA
-                PhaseTermination(phase_steps=args.sa_phase_steps, max_fes=args.max_fes_per_macro),       # SA
-                MoveCountTermination(move_count=args.ts_moves, max_fes=args.max_fes_per_macro),          # TS
-                StagnationTermination(stagnation_threshold=args.stagnation_threshold, max_fes=args.max_fes_per_macro),  # ILS
-            ]
-        else:
-            termination_conditions = None
         
         env = DASGymEnv(
             problem=problem,
             algorithms=algorithms,
             max_fes=args.max_fes,
-            use_macro_actions=args.use_macro_actions,
-            termination_conditions=termination_conditions,
-            max_fes_per_macro=args.max_fes_per_macro,
             interval_fes=args.interval_fes,
             population_size=args.population_size
         )
@@ -405,15 +365,6 @@ def train(args):
             
     print(f"\nModel Config:")
     print(f"  Normalization: {args.normalize}")
-    print(f"  Macro-Actions: {args.use_macro_actions}")
-    if args.use_macro_actions:
-        print(f"    - ILS Stagnation: {args.stagnation_threshold} iters")
-        print(f"    - SA Phase: {args.sa_phase_steps} steps")
-        print(f"    - GA Generations: {args.ga_generations}")
-        print(f"    - TS Moves: {args.ts_moves}")
-        print(f"    - Max FES/Macro: {args.max_fes_per_macro}")
-    else:
-        print(f"    - Interval FES: {args.interval_fes}")
     print(f"  Observation:   {train_env.observation_space.shape}")
     
     print("\nStarting training...")
