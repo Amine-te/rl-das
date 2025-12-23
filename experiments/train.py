@@ -34,7 +34,7 @@ from stable_baselines3.common.monitor import Monitor
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from problems import TSPProblem
-from utils.tsplib_loader import load_all_instances, list_available_instances
+from utils.tsp_loader import load_all_instances, list_available_instances
 from algorithms import GeneticAlgorithm, TabuSearch, SimulatedAnnealing, IteratedLocalSearch
 from core import DASGymEnv
 

@@ -23,7 +23,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from problems import TSPProblem
-from utils.tsplib_loader import load_all_instances
+from utils.tsp_loader import load_all_instances
 from algorithms import GeneticAlgorithm, TabuSearch, SimulatedAnnealing, IteratedLocalSearch
 from core import DASGymEnv
 
@@ -112,6 +112,8 @@ def create_algorithms(problem: TSPProblem) -> List:
 
 def evaluate_rl_agent(model, model_type, problem, args, instance_id, vec_norm=None) -> Dict:
     """Evaluate RL agent on a single instance."""
+    start_time = time.time()
+    
     # Create env
     def make_env():
         algorithms = create_algorithms(problem)
@@ -177,7 +179,7 @@ def evaluate_rl_agent(model, model_type, problem, args, instance_id, vec_norm=No
                 obs_tensor = torch.as_tensor(obs).to(model.device)
                 dist = model.policy.get_distribution(obs_tensor)
                 probs = dist.distribution.probs.cpu().numpy()[0]
-                detail_str = " ".join([f"A{i}:{p:.2f}" for i, p in enumerate(probs)])
+                detail_str = probs  # Store raw probabilities for formatting
         
         obs, reward, done, info = env.step(action)
         
@@ -195,24 +197,24 @@ def evaluate_rl_agent(model, model_type, problem, args, instance_id, vec_norm=No
     episode_data['total_steps'] = step_count
     episode_data['total_fes'] = inner_env.current_fes
     episode_data['switch_count'] = inner_env.context_manager.get_switch_count()
+    episode_data['time'] = time.time() - start_time
     
     return episode_data
 
 
-def run_baselines_comparison(problem, args) -> Dict[str, float]:
-    """Run all baselines on the problem."""
+def run_baselines_comparison(problem, args) -> Dict[str, Dict]:
+    """Run all baselines on the problem and return detailed results."""
     results = {}
     algorithms = create_algorithms(problem)
     algo_names = ['GA', 'TS', 'SA', 'ILS']
     
     for name, algo in zip(algo_names, algorithms):
+        start_time = time.time()
+        
         # Reset/Initialize
         algo.initialize()
         
         # Run for max_fes
-        # Most algos here are iterative. We can just step them until max_fes.
-        # But their step() uses interval.
-        # We can just use a loop.
         current_fes = 0
         best_cost = float('inf')
         
@@ -224,46 +226,156 @@ def run_baselines_comparison(problem, args) -> Dict[str, float]:
         while current_fes < args.max_fes:
             fes_allowed = min(args.interval_fes, args.max_fes - current_fes)
             _, cost = algo.step(fes_allowed)
-            current_fes += fes_allowed # approx
+            current_fes += fes_allowed
             if cost < best_cost:
                 best_cost = cost
                 
-        results[name] = best_cost
+        results[name] = {
+            'cost': best_cost,
+            'time': time.time() - start_time
+        }
         
     return results
 
 
-def format_episode_report(episode_data: Dict, algo_names: List[str], baseline_results: Optional[Dict] = None) -> str:
-    """Format detailed report."""
+def format_report(args, model_type, all_results, all_baselines, total_time, timestamp):
+    """Format the complete evaluation report."""
     lines = []
-    lines.append(f"INSTANCE: {episode_data['problem_name']}")
-    lines.append(f"Initial: {episode_data['initial_cost']:.2f} -> Final: {episode_data['final_cost']:.2f}")
     
-    if baseline_results:
-        best_baseline = min(baseline_results.values())
-        rl_cost = episode_data['final_cost']
-        gap = ((rl_cost - best_baseline) / best_baseline) * 100
-        
-        lines.append("Baselines:")
-        for name, cost in baseline_results.items():
-            lines.append(f"  {name}: {cost:.2f}")
-        lines.append(f"  Best Baseline: {best_baseline:.2f}")
-        lines.append(f"  RL Gap: {gap:+.2f}% (Negative is better)")
-        
-    lines.append("-" * 60)
-    lines.append(f"{'Step':<5} {'Act':<5} {'Algo':<5} {'Cost':<10} {'Rew':<6} {'Introspection'}")
+    # Header
+    lines.append("=" * 80)
+    lines.append("RL-DAS EVALUATION REPORT")
+    lines.append("=" * 80)
     
-    for i in range(len(episode_data['steps'])):
-        a_idx = episode_data['actions'][i]
-        lines.append(f"{episode_data['steps'][i]:<5} {a_idx:<5} {algo_names[a_idx]:<5} "
-                     f"{episode_data['costs'][i]:<10.2f} {episode_data['rewards'][i]:<6.2f} "
-                     f"{episode_data['step_details'][i]}")
+    run_name = args.run_name or f"eval_{model_type}_{timestamp}"
+    lines.append(f"Run Name:       {run_name}")
+    lines.append(f"Timestamp:      {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"Model:          {args.model}")
+    lines.append(f"Problem:        TSP {args.num_cities} cities ({args.instance_type})")
+    lines.append(f"Test Instances: {len(all_results)}")
+    lines.append(f"Max FEs:        {args.max_fes}")
+    lines.append(f"Interval FEs:   {args.interval_fes}")
+    lines.append(f"Deterministic:  {args.deterministic}")
     lines.append("")
+    lines.append("")
+    
+    # RL Agent Performance Summary
+    lines.append("=" * 80)
+    lines.append("RL AGENT PERFORMANCE SUMMARY")
+    lines.append("=" * 80)
+    
+    costs = [r['final_cost'] for r in all_results]
+    times = [r['time'] for r in all_results]
+    
+    lines.append(f"Mean Cost:   {np.mean(costs):.6f} ± {np.std(costs):.6f}")
+    lines.append(f"Best Cost:   {np.min(costs):.6f}")
+    lines.append(f"Worst Cost:  {np.max(costs):.6f}")
+    lines.append(f"Total Time:  {total_time:.2f}s")
+    lines.append("")
+    lines.append("")
+    
+    # Baseline Comparison (if available)
+    if args.run_baselines and all_baselines:
+        lines.append("=" * 80)
+        lines.append("BASELINE COMPARISON")
+        lines.append("=" * 80)
+        
+        # Aggregate baseline results - each instance separately
+        baseline_stats = {}
+        for algo_name in ['GA', 'TS', 'SA', 'ILS']:
+            algo_costs = [instance_baselines[algo_name]['cost'] for instance_baselines in all_baselines]
+            algo_times = [instance_baselines[algo_name]['time'] for instance_baselines in all_baselines]
+            baseline_stats[algo_name] = {
+                'mean': np.mean(algo_costs),
+                'std': np.std(algo_costs),
+                'best': np.min(algo_costs),
+                'worst': np.max(algo_costs),
+                'time': np.sum(algo_times)
+            }
+        
+        # Table header
+        lines.append(f"{'Algorithm':<12} {'Mean Cost':<15} {'Std':<12} {'Best':<12} {'Worst':<12} {'Time (s)':<10}")
+        lines.append("-" * 80)
+        
+        # RL-DAS row
+        lines.append(f"{'RL-DAS':<12} {np.mean(costs):<15.6f} {np.std(costs):<12.6f} "
+                    f"{np.min(costs):<12.6f} {np.max(costs):<12.6f} {total_time:<10.2f}")
+        
+        # Baseline rows
+        for algo in ['GA', 'TS', 'SA', 'ILS']:
+            stats = baseline_stats[algo]
+            lines.append(f"{algo:<12} {stats['mean']:<15.6f} {stats['std']:<12.6f} "
+                        f"{stats['best']:<12.6f} {stats['worst']:<12.6f} {stats['time']:<10.2f}")
+        
+        lines.append("")
+        lines.append("Improvement over baselines:")
+        for algo in ['GA', 'TS', 'SA', 'ILS']:
+            improvement = ((np.mean(costs) - baseline_stats[algo]['mean']) / baseline_stats[algo]['mean']) * 100
+            lines.append(f"  vs {algo}: {improvement:+.2f}%")
+        
+        lines.append("")
+        lines.append("")
+    
+    # Detailed Episode Logs
+    lines.append("=" * 80)
+    lines.append("DETAILED EPISODE LOGS")
+    lines.append("=" * 80)
+    lines.append("")
+    
+    algo_names = ['GA', 'TS', 'SA', 'ILS']
+    
+    for idx, episode_data in enumerate(all_results):
+        lines.append("=" * 80)
+        lines.append(f"INSTANCE {idx}")
+        lines.append("=" * 80)
+        
+        initial_cost = episode_data['initial_cost']
+        final_cost = episode_data['final_cost']
+        improvement = initial_cost - final_cost
+        improvement_pct = (improvement / initial_cost) * 100 if initial_cost > 0 else 0
+        
+        lines.append(f"Initial Cost: {initial_cost:.4f}")
+        lines.append(f"Final Cost:   {final_cost:.4f}")
+        lines.append(f"Improvement:  {improvement:.4f} ({improvement_pct:.2f}%)")
+        lines.append(f"Total Steps:  {episode_data['total_steps']}")
+        lines.append(f"Total FEs:    {episode_data['total_fes']}")
+        lines.append(f"Switches:     {episode_data['switch_count']}")
+        lines.append("")
+        
+        # Step-by-step table
+        lines.append("-" * 80)
+        lines.append("STEP-BY-STEP ALGORITHM SELECTION")
+        lines.append("-" * 80)
+        lines.append(f"{'Step':<6} {'Action':<8} {'Algorithm':<12} {'Cost':<12} {'Reward':<10} {'Probabilities'}")
+        lines.append("-" * 80)
+        
+        for i in range(len(episode_data['steps'])):
+            step = episode_data['steps'][i]
+            action = episode_data['actions'][i]
+            algo = algo_names[action]
+            cost = episode_data['costs'][i]
+            reward = episode_data['rewards'][i]
+            
+            # Format probabilities
+            if isinstance(episode_data['step_details'][i], np.ndarray):
+                probs = episode_data['step_details'][i]
+                prob_str = " ".join([f"{name}:{prob:.3f}" for name, prob in zip(algo_names, probs)])
+            else:
+                prob_str = episode_data['step_details'][i]
+            
+            lines.append(f"{step:<6} {action:<8} {algo:<12} {cost:<12.4f} {reward:<10.4f} {prob_str}")
+        
+        lines.append("=" * 80)
+        lines.append("")
+    
     return "\n".join(lines)
 
 
 def evaluate(args):
     """Main evaluation loop."""
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    start_time = time.time()
+    
     # 1. Load Model
     print(f"Loading model: {args.model}")
     model, model_type = load_model(args.model, args.model_type)
@@ -271,9 +383,7 @@ def evaluate(args):
     
     # Check for Normalization stats
     vec_norm = None
-    # Check same dir as model
     norm_path = os.path.join(os.path.dirname(args.model), f"{Path(args.model).stem}_vecnormalize.pkl")
-    # Also check without prefix if standard name used
     if not os.path.exists(norm_path):
         norm_path = os.path.join(os.path.dirname(args.model), "vecnormalize.pkl")
         
@@ -286,7 +396,7 @@ def evaluate(args):
     # 2. Prepare Instances
     if args.tsplib_dir:
         print(f"Loading TSPLIB from {args.tsplib_dir}")
-        instances = load_all_instances(args.tsplib_dir, augment=False) # No augment for eval typically
+        instances = load_all_instances(args.tsplib_dir, augment=False)
         if args.num_test_instances < len(instances):
              instances = instances[:args.num_test_instances]
     else:
@@ -294,15 +404,13 @@ def evaluate(args):
         np.random.seed(args.seed)
         instances = []
         for i in range(args.num_test_instances):
-             instances.append(TSPProblem(args.num_cities, args.instance_type, seed=args.seed+i))
+             instances.append(TSPProblem(num_cities=args.num_cities, distribution=args.instance_type, seed=args.seed+i))
              
     print(f"Evaluating on {len(instances)} instances.")
     
-    # 3. Validation Loop
-    results = []
-    logs = []
-    algo_names = ['GA', 'TS', 'SA', 'ILS']
-    baseline_agg = {'r_wins': 0, 'r_gap': []}
+    # 3. Evaluation Loop
+    all_results = []
+    all_baselines = [] if args.run_baselines else None
     
     for i, problem in enumerate(instances):
         if args.verbose:
@@ -310,62 +418,44 @@ def evaluate(args):
             
         # RL Eval
         data = evaluate_rl_agent(model, model_type, problem, args, i, vec_norm)
-        results.append(data)
+        all_results.append(data)
         
         # Baselines Eval
-        b_results = None
         if args.run_baselines:
-            print(f"  Running baselines for {getattr(problem, 'name', 'Instance')}...")
+            print(f"  Running baselines for instance {i}...")
             b_results = run_baselines_comparison(problem, args)
-            best_b = min(b_results.values())
-            rl_cost = data['final_cost']
+            all_baselines.append(b_results)
             
-            # Stats
-            if rl_cost < best_b:
-                baseline_agg['r_wins'] += 1
+            best_b = min([b['cost'] for b in b_results.values()])
+            rl_cost = data['final_cost']
             gap = ((rl_cost - best_b) / best_b) * 100
-            baseline_agg['r_gap'].append(gap)
             
             print(f"  RL: {rl_cost:.2f} | Best Baseline: {best_b:.2f} | Gap: {gap:+.2f}%")
-        
-        logs.append(format_episode_report(data, algo_names, b_results))
-        
-    # 4. Report
-    costs = [r['final_cost'] for r in results]
-    print("\n" + "="*60)
-    print(f"RESULTS ({model_type.upper()})")
-    print("="*60)
-    print(f"Mean Cost: {np.mean(costs):.2f} +/- {np.std(costs):.2f}")
-    print(f"Best:      {np.min(costs):.2f}")
-    print(f"Worst:     {np.max(costs):.2f}")
     
-    if args.run_baselines and baseline_agg['r_gap']:
-        win_rate = (baseline_agg['r_wins'] / len(instances)) * 100
-        mean_gap = np.mean(baseline_agg['r_gap'])
-        print("-" * 60)
-        print(f"BASELINE COMPARISON:")
-        print(f"RL Win Rate: {win_rate:.1f}%")
-        print(f"Mean Gap:    {mean_gap:+.2f}% (Negative = RL Better)")
+    total_time = time.time() - start_time
+    
+    # 4. Generate and Save Report
+    report = format_report(args, model_type, all_results, all_baselines, total_time, timestamp)
+    
+    # Print summary
+    costs = [r['final_cost'] for r in all_results]
+    print("\n" + "="*80)
+    print(f"EVALUATION COMPLETE ({model_type.upper()})")
+    print("="*80)
+    print(f"Mean Cost: {np.mean(costs):.6f} ± {np.std(costs):.6f}")
+    print(f"Best:      {np.min(costs):.6f}")
+    print(f"Worst:     {np.max(costs):.6f}")
+    print(f"Time:      {total_time:.2f}s")
     
     # Save to file
     os.makedirs(args.results_dir, exist_ok=True)
-    if args.run_name:
-        fname = args.run_name
-    else:
-        fname = f"eval_{model_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_name = args.run_name or f"eval_{model_type}_{timestamp}"
+    out_path = os.path.join(args.results_dir, f"{run_name}.txt")
     
-    out_path = os.path.join(args.results_dir, f"{fname}.txt")
     with open(out_path, 'w') as f:
-        f.write(f"EVALUATION REPORT: {fname}\n")
-        f.write(f"Mean Cost: {np.mean(costs):.2f}\n")
-        if args.run_baselines and baseline_agg['r_gap']:
-             f.write(f"RL Win Rate: {win_rate:.1f}%\n")
-             f.write(f"Mean Gap:    {mean_gap:+.2f}%\n")
-        f.write("\n" + "="*60 + "\n\n")
-        f.write("\n".join(logs))
-        f.write(f"\nSUMMARY:\nMean: {np.mean(costs)}\nStd: {np.std(costs)}\n")
+        f.write(report)
         
-    print(f"Detailed logs saved to {out_path}")
+    print(f"\nDetailed report saved to: {out_path}")
 
 
 if __name__ == '__main__':
