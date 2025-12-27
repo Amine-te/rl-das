@@ -185,9 +185,9 @@ def evaluate_rl_agent(model, model_type, problem, args, instance_id, vec_norm=No
         
         # Record
         episode_data['steps'].append(step_count)
-        episode_data['actions'].append(int(action))
+        episode_data['actions'].append(int(action[0]))
         episode_data['step_details'].append(detail_str)
-        episode_data['rewards'].append(float(reward))
+        episode_data['rewards'].append(float(reward[0]))
         episode_data['costs'].append(float(info[0]['best_cost'])) # VecEnv returns list of infos
         
         step_count += 1
