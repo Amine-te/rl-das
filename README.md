@@ -1,9 +1,11 @@
 # 🧠 RL-DAS: Dynamic Algorithm Selection for TSP
 
-![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=for-the-badge&logo=python)
-![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?style=for-the-badge&logo=pytorch)
-![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit)
-![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.8%2B-blue?style=for-the-badge&logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/PyTorch-EE4C2C?style=for-the-badge&logo=pytorch" alt="PyTorch">
+  <img src="https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit" alt="Streamlit">
+  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
+</p>
 
 > **Adaptive Intelligence for Combinatorial Optimization**  
 > An advanced Reinforcement Learning framework that dynamically selects the optimal metaheuristic algorithm at runtime to solve the Traveling Salesperson Problem (TSP).
@@ -92,6 +94,13 @@ python experiments/train.py --model-type dqn --timesteps 100000 --instance-type 
 ```
 
 ### Evaluation
+
+Run the evaluation script to compare the agent against baselines:
+
+```bash
+# Evaluate a trained model against baselines on 50-city problems
+python experiments/evaluate.py --model checkpoints/best_model.zip --run-baselines --num-cities 50 --num-test-instances 20
+```
 
 The agent is evaluated against standalone baselines on:
 
